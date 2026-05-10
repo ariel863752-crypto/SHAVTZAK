@@ -4,24 +4,44 @@ from ortools.sat.python import cp_model
 import io
 
 # ==========================================
-# 1. עיצוב ו-RTL
+# 1. עיצוב, סטיילינג ו-RTL (מימין לשמאל)
 # ==========================================
-st.set_page_config(page_title="מערכת שיבוץ חיילים", page_icon="🪖", layout="wide")
+st.set_page_config(page_title="מערכת שיבוץ חיילים חכמה", page_icon="🪖", layout="wide")
 
 st.markdown("""
     <style>
-    .stApp { direction: rtl; text-align: right; }
+    /* הגדרות כיוון כללי מימין לשמאל */
+    .stApp, div[data-testid="stSidebar"], .stMarkdown, .stTable, .stDataFrame {
+        direction: rtl;
+        text-align: right;
+    }
+    /* תיקון רשימות ותפריטים */
+    ul, ol { direction: rtl; padding-right: 2rem; padding-left: 0; }
+    /* עיצוב טבלאות המדריך */
+    .guide-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 20px 0;
+        background-color: #f8f9fa;
+        color: #333;
+    }
+    .guide-table th {
+        background-color: #1f77b4;
+        color: white;
+        padding: 12px;
+        text-align: right;
+    }
+    .guide-table td {
+        padding: 10px;
+        border: 1px solid #dee2e6;
+    }
+    /* התראות מעוצבות */
     .stAlert { direction: rtl; text-align: right; }
-    div[data-testid="stExpander"] { direction: rtl; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
-    th { background-color: #f0f2f6; text-align: right; padding: 12px; border: 1px solid #ddd; }
-    td { padding: 10px; border: 1px solid #ddd; text-align: right; }
-    .guide-table { width: 100%; background-color: #f8f9fa; border: 1px solid #dee2e6; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. מחלקות נתונים
+# 2. מחלקות הנתונים (OOP)
 # ==========================================
 class Soldier:
     def __init__(self, soldier_id, name, qualifications=None, restricted_tasks=None, max_consecutive_hours=6):
@@ -48,35 +68,35 @@ class Task:
             self.active_hours = [int(x.strip()) for x in str(active_hours).split(',') if str(x).strip().isdigit()]
 
 # ==========================================
-# 3. פונקציות עזר (Excel)
+# 3. פונקציות עזר (Excel & Validation)
 # ==========================================
-def to_excel_output(df, sheet_name='Schedule'):
+def to_excel_file(df, sheet_name='Sheet1'):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name=sheet_name)
         workbook  = writer.book
         worksheet = writer.sheets[sheet_name]
-        header_format = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
+        header_format = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1, 'align': 'center'})
         for col_num, value in enumerate(df.columns.values):
             worksheet.write(0, col_num, value, header_format)
             column_len = max(df[value].astype(str).map(len).max(), len(value)) + 2
             worksheet.set_column(col_num, col_num, column_len)
     return output.getvalue()
 
-def validate_input(s_df, t_df):
+def validate_input_files(s_df, t_df):
     errors = []
     req_s = ['מספר_אישי', 'שם', 'הכשרות', 'פטורים', 'מקסימום_שעות_ברצף']
     req_t = ['קוד_משימה', 'שם', 'כוח_אדם_נדרש', 'משך_זמן', 'אישור_חפיפה', 'שעות_פעילות']
     for col in req_s:
-        if col not in s_df.columns: errors.append(f"❌ חסרה עמודה בקובץ חיילים: {col}")
+        if col not in s_df.columns: errors.append(f"❌ חסרה עמודה בקובץ חיילים: **{col}**")
     for col in req_t:
-        if col not in t_df.columns: errors.append(f"❌ חסרה עמודה בקובץ משימות: {col}")
+        if col not in t_df.columns: errors.append(f"❌ חסרה עמודה בקובץ משימות: **{col}**")
     if not errors and s_df['מספר_אישי'].duplicated().any():
-        errors.append("❌ קיימים מספרי אישי כפולים בקובץ החיילים.")
+        errors.append("❌ שגיאת נתונים: קיימים מספרי אישי כפולים בקובץ החיילים.")
     return errors
 
 # ==========================================
-# 4. האלגוריתם עם חלוקת עומס (MinMax)
+# 4. האלגוריתם המשולב (אילוצים + חלוקת עומס)
 # ==========================================
 def solve_scheduling(soldiers, tasks, num_hours=25):
     model = cp_model.CpModel()
@@ -94,7 +114,7 @@ def solve_scheduling(soldiers, tasks, num_hours=25):
             else:
                 for s in soldiers: model.Add(x[s.soldier_id, t.task_id, h] == 0)
 
-    # אילוץ חייל אחד למשימה אחת (למעט חפיפות מאושרות)
+    # אילוץ חייל אחד למשימה אחת (למעט חפיפות)
     for s in soldiers:
         for h in range(num_hours):
             blocking_tasks = [x[s.soldier_id, t.task_id, h] for t in tasks if not t.allow_overlap]
@@ -105,7 +125,7 @@ def solve_scheduling(soldiers, tasks, num_hours=25):
             if t.task_id in s.restricted_tasks:
                 for h in range(num_hours): model.Add(x[s.soldier_id, t.task_id, h] == 0)
 
-    # חלוקת עומס שוויונית - מזעור העומס המקסימלי
+    # פונקציית מטרה: חלוקת עומס שוויונית (Min-Max)
     soldier_total_hours = []
     for s in soldiers:
         total = sum(x[s.soldier_id, t.task_id, h] for t in tasks for h in range(num_hours))
@@ -118,7 +138,7 @@ def solve_scheduling(soldiers, tasks, num_hours=25):
     model.Minimize(max_load)
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 20.0
+    solver.parameters.max_time_in_seconds = 25.0
     status = solver.Solve(model)
 
     if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
@@ -137,55 +157,95 @@ def solve_scheduling(soldiers, tasks, num_hours=25):
     return None
 
 # ==========================================
-# 5. ממשק משתמש (UI)
+# 5. ממשק משתמש (Tabs)
 # ==========================================
 st.title("🪖 מערכת שיבוץ כוח אדם מקצועית")
 
-tab1, tab2, tab3 = st.tabs(["🚀 ביצוע שיבוץ", "📖 מדריך למשתמש", "📥 תבניות אקסל"])
+tab_run, tab_guide, tab_templates = st.tabs(["🚀 ביצוע שיבוץ", "📖 מדריך מפורט למשתמש", "📥 הורדת תבניות אקסל"])
 
-with tab3:
+# --- לשונית תבניות ---
+with tab_templates:
     st.header("הורדת תבניות עבודה")
-    s_ex = pd.DataFrame([{'מספר_אישי': 123, 'שם': 'חייל דוגמה', 'הכשרות': 'נהג', 'פטורים': '102', 'מקסימום_שעות_ברצף': 6}])
+    st.write("השתמש בקבצים אלו כבסיס לנתונים שלך כדי למנוע שגיאות בשמות העמודות.")
+    s_ex = pd.DataFrame([{'מספר_אישי': 1234567, 'שם': 'ישראל ישראלי', 'הכשרות': 'נהג', 'פטורים': '102', 'מקסימום_שעות_ברצף': 6}])
     t_ex = pd.DataFrame([
-        {'קוד_משימה': 101, 'שם': 'שער', 'כוח_אדם_נדרש': 1, 'משך_זמן': 4, 'אישור_חפיפה': False, 'שעות_פעילות': 'all'},
-        {'קוד_משימה': 102, 'שם': 'כוננות', 'כוח_אדם_נדרש': 8, 'משך_זמן': 25, 'אישור_חפיפה': True, 'שעות_פעילות': 'all'}
+        {'קוד_משימה': 101, 'שם': 'אבטחה', 'כוח_אדם_נדרש': 1, 'משך_זמן': 4, 'אישור_חפיפה': False, 'שעות_פעילות': 'all'},
+        {'קוד_משימה': 102, 'שם': 'כיתת כוננות', 'כוח_אדם_נדרש': 8, 'משך_זמן': 25, 'אישור_חפיפה': True, 'שעות_פעילות': 'all'}
     ])
     c1, c2 = st.columns(2)
-    with c1: st.download_button("📥 תבנית חיילים", data=to_excel_output(s_ex), file_name="Soldiers.xlsx")
-    with c2: st.download_button("📥 תבנית משימות", data=to_excel_output(t_ex), file_name="Tasks.xlsx")
+    with c1: st.download_button("📥 הורד תבנית חיילים", data=to_excel_file(s_ex), file_name="Template_Soldiers.xlsx")
+    with c2: st.download_button("📥 הורד תבנית משימות", data=to_excel_file(t_ex), file_name="Template_Tasks.xlsx")
 
-with tab2:
-    st.header("📖 מדריך מפורט")
+# --- לשונית מדריך מפורט ---
+with tab_guide:
+    st.header("📖 מדריך למילוי קבצי המערכת")
+    st.write("כדי שהאלגוריתם יצליח לחלק את העומס בצורה הוגנת, הקפידו על הכללים הבאים:")
+
+    st.subheader("1️⃣ קובץ חיילים (Soldiers)")
     st.markdown("""
-    ### כללים למילוי הקבצים:
-    1. **אישור_חפיפה:** אם המשימה יכולה לקרות במקביל לאחרות (כמו כיתת כוננות), רשמו **True**.
-    2. **פטורים:** רשמו את מספר קוד המשימה. אם יש כמה, הפרידו בפסיק (לדוגמה: `101, 102`).
-    3. **שעות_פעילות:** רשמו `all` לפעילות מסביב לשעון, או רשימת שעות (לדוגמה: `8,9,10`).
-    4. **מקסימום שעות:** המערכת מחלקת את העומס שווה בשווה באופן אוטומטי.
-    """)
+    <table class="guide-table">
+        <tr><th>שם עמודה</th><th>מה לכתוב?</th><th>דוגמה</th></tr>
+        <tr><td><b>מספר_אישי</b></td><td>זיהוי ייחודי לכל חייל (חובה)</td><td>1234567</td></tr>
+        <tr><td><b>שם</b></td><td>שם החייל שיופיע בלוח</td><td>אבי כהן</td></tr>
+        <tr><td><b>הכשרות</b></td><td>מיומנויות מופרדות בפסיק בלבד</td><td>נהג, חובש</td></tr>
+        <tr><td><b>פטורים</b></td><td>קודי משימות שהחייל <b>אסור</b> לו לבצע</td><td>101, 105</td></tr>
+        <tr><td><b>מקסימום_שעות_ברצף</b></td><td>הגבלת שעות עבודה רצופות</td><td>6</td></tr>
+    </table>
+    """, unsafe_allow_html=True)
 
-with tab1:
-    st.subheader("העלאה והרצה")
-    u1, u2 = st.columns(2)
-    with u1: sf = st.file_uploader("📂 קובץ חיילים", type="xlsx")
-    with u2: tf = st.file_uploader("📂 קובץ משימות", type="xlsx")
+    st.subheader("2️⃣ קובץ משימות (Tasks)")
+    st.markdown("""
+    <table class="guide-table">
+        <tr><th>שם עמודה</th><th>מה לכתוב?</th><th>ערכים / דוגמה</th></tr>
+        <tr><td><b>קוד_משימה</b></td><td>מספר המשימה (חובה להתאים ל'פטורים')</td><td>101</td></tr>
+        <tr><td><b>שם</b></td><td>שם המשימה לשיבוץ</td><td>שמירת שער</td></tr>
+        <tr><td><b>כוח_אדם_נדרש</b></td><td>כמות חיילים שחייבים להיות שם בו-זמנית</td><td>2</td></tr>
+        <tr><td><b>אישור_חפיפה</b></td><td>האם המשימה יכולה לקרות במקביל לאחרת?</td><td><b>True</b> (כן) / <b>False</b> (לא)</td></tr>
+        <tr><td><b>שעות_פעילות</b></td><td>מתי המשימה קורית?</td><td>all או 8,9,10</td></tr>
+    </table>
+    """, unsafe_allow_html=True)
+    
+    st.info("💡 **טיפ:** להגדרת משימה כמו כיתת כוננות, הגדירו את 'אישור_חפיפה' כ-True ומשך זמן של 25 שעות.")
+
+# --- לשונית ביצוע שיבוץ ---
+with tab_run:
+    st.subheader("🚀 העלאת קבצים והרצה")
+    up1, up2 = st.columns(2)
+    with up1: sf = st.file_uploader("📂 קובץ חיילים (Excel)", type="xlsx")
+    with up2: tf = st.file_uploader("📂 קובץ משימות (Excel)", type="xlsx")
 
     if sf and tf:
-        s_df = pd.read_excel(sf)
-        t_df = pd.read_excel(tf)
-        errs = validate_input(s_df, t_df)
-        if errs:
-            for e in errs: st.error(e)
-        else:
-            st.success("✅ הקבצים תקינים")
-            if st.button("⚙️ צור שיבוץ אופטימלי", type="primary", use_container_width=True):
-                with st.spinner("מחשב חלוקת עומס הוגנת..."):
-                    s_l = [Soldier(r['מספר_אישי'], r['שם'], r.get('הכשרות'), r.get('פטורים'), r.get('מקסימום_שעות_ברצף')) for _, r in s_df.iterrows()]
-                    t_l = [Task(r['קוד_משימה'], r['שם'], r['כוח_אדם_נדרש'], r['משך_זמן'], r.get('אישור_חפיפה'), r.get('שעות_פעילות')) for _, r in t_df.iterrows()]
-                    final = solve_scheduling(s_l, t_l)
-                    if final is not None:
-                        st.balloons()
-                        st.dataframe(final, use_container_width=True)
-                        st.download_button("📥 הורד לוח סופי (Excel)", data=to_excel_output(final), file_name="Final_Schedule.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-                    else:
-                        st.error("לא נמצא פתרון חוקי. נסה להוסיף חיילים או להפחית משימות.")
+        try:
+            s_df = pd.read_excel(sf)
+            t_df = pd.read_excel(tf)
+            errors = validate_input_files(s_df, t_df)
+            
+            if errors:
+                for e in errors: st.error(e)
+            else:
+                st.success("✅ הקבצים תקינים למשלוח")
+                if st.button("⚙️ צור שיבוץ אופטימלי והוגן", type="primary", use_container_width=True):
+                    with st.spinner("המערכת מחשבת חלוקת עומסים שוויונית..."):
+                        s_list = [Soldier(r['מספר_אישי'], r['שם'], r.get('הכשרות'), r.get('פטורים'), r.get('מקסימום_שעות_ברצף')) for _, r in s_df.iterrows()]
+                        t_list = [Task(r['קוד_משימה'], r['שם'], r['כוח_אדם_נדרש'], r['משך_זמן'], r.get('אישור_חפיפה'), r.get('שעות_פעילות')) for _, r in t_df.iterrows()]
+                        
+                        final_res = solve_scheduling(s_list, t_list)
+                        
+                        if final_res is not None:
+                            st.balloons()
+                            st.subheader("🗓️ לוח השיבוץ הסופי")
+                            st.dataframe(final_res, use_container_width=True)
+                            
+                            # הורדת הקובץ הסופי
+                            excel_data = to_excel_file(final_res, sheet_name='Final_Schedule')
+                            st.download_button(
+                                label="📥 הורד לוח שיבוץ סופי (Excel)",
+                                data=excel_data,
+                                file_name="Final_Schedule.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                        else:
+                            st.error("❌ לא נמצא פתרון חוקי. בדוק אם יש מספיק חיילים למשימות הנדרשות.")
+        except Exception as e:
+            st.error(f"שגיאה בלתי צפויה: {e}")

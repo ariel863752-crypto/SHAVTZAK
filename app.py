@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from ortools.sat.python import cp_model
 
 # ══════════════════════════════════════════════════════════════════
-# 1. הגדרות עמוד ו-CSS (RTL חסין כדורים)
+# 1. הגדרות עמוד ו-CSS (העיצוב של v3.0 עם תיקוני RTL)
 # ══════════════════════════════════════════════════════════════════
 st.set_page_config(
     page_title='שבצ"ק חכם',
@@ -18,83 +18,64 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap');
 
-/* כפייה של RTL על כל האפליקציה */
+/* ── בסיס RTL מלא ── */
 .stApp, [data-testid="stAppViewContainer"], .main, .block-container {
     direction: rtl !important;
     text-align: right !important;
+    font-family: 'Heebo', sans-serif !important;
 }
 
-/* יישור טאבים לצד ימין של המסך */
+/* דחיפת הטאבים לימין */
 [data-testid="stTabs"] [data-baseweb="tab-list"] {
     flex-direction: row-reverse !important;
     justify-content: flex-start !important;
-    gap: 20px;
-    border-bottom: 2px solid #e67e22;
+    gap: 10px;
 }
 
-[data-testid="stTabs"] [data-baseweb="tab"] {
-    font-family: 'Heebo', sans-serif;
-    font-weight: 700;
-    font-size: 18px;
-}
-
-/* כותרת ירוקה - יישור לימין */
+/* ── הכותרת הירוקה שאהבת ── */
 .app-header {
     background: linear-gradient(135deg, #1a3d17 0%, #2d5a27 60%, #3d7a35 100%);
     border-radius: 16px;
-    padding: 35px;
-    margin-bottom: 30px;
+    padding: 30px 32px;
+    margin-bottom: 28px;
     color: white;
     text-align: right;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
 }
 .app-header h1 { font-size: 42px; font-weight: 900; color: white !important; margin: 0; }
-.app-header p { font-size: 18px; color: white !important; margin-top: 10px; opacity: 0.9; }
+.app-header p { font-size: 16px; opacity: 0.85; color: white !important; margin-top: 5px; }
 
-/* כרטיסי מדדים - תיקון חפיפה ויישור */
-.metric-row { 
-    display: flex; 
-    gap: 20px; 
-    margin: 25px 0; 
-    flex-wrap: wrap; 
-    justify-content: flex-start;
-    direction: rtl;
-}
+/* ── כרטיסי מדד (Metrics) - מניעת חפיפה ── */
+.metric-row { display: flex; gap: 16px; margin: 20px 0; flex-wrap: wrap; direction: rtl; }
 .metric-card {
     flex: 1; min-width: 200px;
-    background: white; border-radius: 15px; padding: 25px;
-    border: 1px solid #dde8dc; box-shadow: 0 4px 10px rgba(0,0,0,0.05);
-    text-align: right;
+    background: white; border-radius: 14px; padding: 20px;
+    border: 1px solid #dde8dc; box-shadow: 0 2px 8px rgba(45,90,39,0.07);
 }
-.mc-label { font-size: 14px; color: #7a9a77; font-weight: 700; margin-bottom: 8px; }
-.mc-value { font-size: 36px; font-weight: 900; color: #1a3d17; }
+.mc-label { font-size: 11px; color: #7a9a77; font-weight: 600; text-transform: uppercase; margin-bottom: 6px; }
+.mc-value { font-size: 34px; font-weight: 800; color: #1a3d17; }
 
-/* טבלאות מדריך */
-.guide-table {
-    width: 100%; border-collapse: collapse; margin: 20px 0;
-    background: white; border-radius: 12px; overflow: hidden;
-}
-.guide-table th { background: #2d5a27; color: white; padding: 15px; text-align: right; }
-.guide-table td { padding: 15px; border-bottom: 1px solid #eee; text-align: right; line-height: 1.6; }
-
-/* תיבות מידע */
-.info-box { 
-    background: #edf5ec; border-right: 6px solid #2d5a27; 
-    padding: 20px; border-radius: 0 10px 10px 0; 
-    margin: 15px 0; text-align: right; direction: rtl;
-}
-
-/* כפתור כתום בולט */
+/* ── כפתורים ── */
 div.stButton > button {
-    background: linear-gradient(135deg, #e67e22, #d35400) !important;
-    color: white !important; font-weight: 800 !important; font-size: 20px !important;
-    border-radius: 12px !important; height: 3.5em; width: 100%; border: none !important;
+    background: linear-gradient(135deg, #2d5a27, #3d7a35) !important;
+    color: white !important; font-weight: 700 !important; border-radius: 10px !important;
+    height: 3.5em; width: 100%; border: none !important;
 }
+[data-testid="stDownloadButton"] > button {
+    background: #c0500a !important; color: white !important; border-radius: 10px !important;
+}
+
+/* ── טבלאות המדריך ── */
+.guide-table { width: 100%; border-collapse: collapse; margin: 16px 0; direction: rtl; }
+.guide-table th { background: #2d5a27; color: white; padding: 12px; text-align: right; }
+.guide-table td { padding: 12px; border-bottom: 1px solid #eee; background: white; text-align: right; }
+
+/* ── תיבות מידע ── */
+.info-box { background: #edf5ec; border-right: 4px solid #2d5a27; padding: 15px; margin: 15px 0; border-radius: 0 10px 10px 0; }
 </style>
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════
-# 2. לוגיקה ומחלקות
+# 2. לוגיקה ומחלקות (המוח של המערכת)
 # ══════════════════════════════════════════════════════════════════
 
 class Soldier:
@@ -122,6 +103,7 @@ class Task:
         if pd.isna(hours) or str(hours).strip().lower() in ("all",""): return list(range(24))
         return [int(x) for x in str(hours).replace(" ","").split(",") if x.isdigit()]
 
+# פונקציית אקסל עם Auto-fit (הרווחים שביקשת)
 def to_excel_styled(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -135,7 +117,7 @@ def to_excel_styled(df):
     return output.getvalue()
 
 # ══════════════════════════════════════════════════════════════════
-# 3. מנוע אופטימיזציה (48 שעות + הוגנות)
+# 3. מנוע אופטימיזציה (48 שעות, שינה והוגנות)
 # ══════════════════════════════════════════════════════════════════
 
 def solve_scheduling(soldiers, tasks, num_days=2):
@@ -149,14 +131,12 @@ def solve_scheduling(soldiers, tasks, num_days=2):
                 x[s.soldier_id, t.task_id, h] = model.NewBoolVar(f'x_{s.soldier_id}_{t.task_id}_{h}')
                 start[s.soldier_id, t.task_id, h] = model.NewBoolVar(f'st_{s.soldier_id}_{t.task_id}_{h}')
 
-    # אילוצי רציפות, מנוחה ואיוש
     for s in soldiers:
         for t in tasks:
             for h in range(H):
                 rel = [start[s.soldier_id, t.task_id, i] for i in range(max(0, h - t.shift_duration + 1), h + 1)]
                 model.Add(x[s.soldier_id, t.task_id, h] == sum(rel))
                 if h + t.shift_duration > H: model.Add(start[s.soldier_id, t.task_id, h] == 0)
-
                 if t.rest_duration > 0:
                     busy = t.shift_duration + t.rest_duration
                     for nh in range(h + 1, min(h + busy, H)):
@@ -174,7 +154,6 @@ def solve_scheduling(soldiers, tasks, num_days=2):
         for h in range(H):
             model.Add(sum(x[s.soldier_id, t.task_id, h] for t in tasks if not t.allow_overlap) <= 1)
 
-    # הוגנות Min-Max
     s_loads = [sum(x[s.soldier_id, t.task_id, h] for t in tasks for h in range(H)) for s in soldiers]
     max_load = model.NewIntVar(0, H, "max_load")
     min_load = model.NewIntVar(0, H, "min_load")
@@ -191,21 +170,21 @@ def solve_scheduling(soldiers, tasks, num_days=2):
         rows = []
         for s in soldiers:
             row = {"שם": s.name}
-            n_hours = 0
+            n_nite = 0
             for h in range(H):
                 day = h // 24 + 1
                 label = f"יום {day} - {h%24:02d}:00"
                 act = [t.name for t in tasks if solver.Value(x[s.soldier_id, t.task_id, h]) == 1]
                 row[label] = " + ".join(act) if act else "—"
-                if act and (h%24) in Task.NIGHT: n_hours += 1
+                if act and (h%24) in Task.NIGHT: n_nite += 1
             row["סך שעות"] = sum(1 for h in range(H) if any(solver.Value(x[s.soldier_id, t.task_id, h]) == 1 for t in tasks))
-            row["שעות לילה"] = n_hours
+            row["שעות לילה"] = n_nite
             rows.append(row)
         return pd.DataFrame(rows)
     return None
 
 # ══════════════════════════════════════════════════════════════════
-# 4. ממשק המשתמש (Tabs עם תוכן מלא)
+# 4. ממשק המשתמש (Tabs ועיצוב v3.0)
 # ══════════════════════════════════════════════════════════════════
 
 st.markdown("""
@@ -215,17 +194,42 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab_run, tab_guide, tab_templates = st.tabs(["🚀 ביצוע שיבוץ", "📖 מדריך למילוי שבצ''ק", "📥 תבניות עבודה"])
+tab_run, tab_guide, tab_templates = st.tabs(["🚀 ביצוע שיבוץ", "📖 מדריך מפורט", "📥 תבניות עבודה"])
 
-# --- טאב 1: הרצה + גרפים + תובנות ---
-with tab_run:
+with tab_templates:
+    st.markdown("### 📥 הורדת תבניות עבודה")
     c1, c2 = st.columns(2)
-    with c1: sf = st.file_uploader("📂 העלה קובץ חיילים", type="xlsx")
-    with c2: tf = st.file_uploader("📂 העלה קובץ משימות", type="xlsx")
+    with c1:
+        s_ex = pd.DataFrame({"מספר_אישי": [1001, 1002], "שם": ["ישראל ישראלי", "יוסי כהן"], "פטורים": ["", "1"]})
+        st.write("**תבנית חיילים:**")
+        st.dataframe(s_ex, hide_index=True)
+        st.download_button("הורד תבנית חיילים", data=to_excel_styled(s_ex), file_name="Soldiers.xlsx")
+    with c2:
+        t_ex = pd.DataFrame({"קוד_משימה": [1, 2], "שם": ["שמירה", "מטבח"], "כוח_אדם_נדרש": [1, 3], "משך_משמרת": [4, 6], "שעות_מנוחה_אחרי": [8, 0]})
+        st.write("**תבנית משימות:**")
+        st.dataframe(t_ex, hide_index=True)
+        st.download_button("הורד תבנית משימות", data=to_excel_styled(t_ex), file_name="Tasks.xlsx")
+
+with tab_guide:
+    st.markdown("### 📖 מדריך למילוי השבצ\"ק")
+    st.markdown("""
+    <table class="guide-table">
+        <tr><th>עמודה</th><th>הסבר מבצעי</th><th>דוגמה</th></tr>
+        <tr><td><b>משך_משמרת</b></td><td>כמה שעות רצופות חייל "נעול" במשימה.</td><td>4 (החייל לא יוחלף באמצע).</td></tr>
+        <tr><td><b>שעות_מנוחה_אחרי</b></td><td>כמה שעות הפסקה חובה לתת לחייל בסיום.</td><td>8 (חסימה משיבוץ ל-8 שעות).</td></tr>
+        <tr><td><b>אישור_חפיפה</b></td><td>האם המשימה מאפשרת משימה נוספת במקביל?</td><td>True לכוננות, False לשמירה.</td></tr>
+        <tr><td><b>שעות_פעילות</b></td><td>all ל-24/7 או שעות ספציפיות (8,9,12).</td><td>all</td></tr>
+    </table>
+    """, unsafe_allow_html=True)
+
+with tab_run:
+    col_u1, col_u2 = st.columns(2)
+    with col_u1: sf = st.file_uploader("📂 העלה קובץ חיילים", type="xlsx")
+    with col_u2: tf = st.file_uploader("📂 העלה קובץ משימות", type="xlsx")
 
     if sf and tf:
         s_df, t_df = pd.read_excel(sf), pd.read_excel(tf)
-        if st.button("⚙️ צור שבצ''ק ונתח נתונים"):
+        if st.button("⚙️ צור שבצ''ק אופטימלי"):
             soldiers = [Soldier(r['מספר_אישי'], r['שם'], r.get('פטורים')) for _, r in s_df.iterrows()]
             tasks = [Task(r['קוד_משימה'], r['שם'], r['כוח_אדם_נדרש'], r.get('משך_משמרת'), r.get('שעות_מנוחה_אחרי'), r.get('אישור_חפיפה'), r.get('שעות_פעילות')) for _, r in t_df.iterrows()]
             
@@ -233,7 +237,7 @@ with tab_run:
             if res is not None:
                 st.success("✅ השיבוץ הושלם!")
                 
-                # כרטיסי מדד
+                # כרטיסי המדד המעוצבים (Metrics)
                 gap = res["סך שעות"].max() - res["סך שעות"].min()
                 st.markdown(f"""
                 <div class="metric-row">
@@ -247,46 +251,17 @@ with tab_run:
                 st.table(res)
                 st.download_button("📥 הורד קובץ אקסל סופי", data=to_excel_styled(res), file_name="Final_Schedule.xlsx")
                 
-                # גרפים
+                # גרפים מעוצבים
                 st.divider()
-                st.subheader("📊 ניתוח עומסים חזותי")
+                st.subheader("📊 ניתוח עומסים")
                 g1, g2 = st.columns(2)
                 with g1: st.plotly_chart(px.bar(res, x="שם", y="סך שעות", color="סך שעות", title="עומס כולל", color_continuous_scale="Greens"), use_container_width=True)
-                with g2: st.plotly_chart(px.bar(res, x="שם", y="שעות לילה", title="פגיעה בשינת לילה", color="שעות לילה", color_continuous_scale="Reds"), use_container_width=True)
+                with g2: st.plotly_chart(px.bar(res, x="שם", y="שעות לילה", title="עבודה בלילה", color="שעות לילה", color_continuous_scale="Reds"), use_container_width=True)
 
                 # תובנות ה"למה"
-                st.markdown("#### 💡 למה הלו\"ז נראה ככה?")
-                with st.expander("ניתוח סיבות השיבוץ"):
-                    st.write(f"**פערי עומס:** החיילים העמוסים ביותר הם אלו ללא פטורים שזמינים למילוי 'חורים'.")
-                    st.write(f"**שינת לילה:** המערכת ממזערת עבודה בלילה אך מחויבת לאייש עמדות 24/7 שהגדרת.")
+                st.markdown("#### 💡 תובנות מערכת")
+                with st.expander("לחץ להסבר על תוצאות השיבוץ"):
+                    st.write(f"**פערי עומס:** הפער נוצר כי לחלק מהחיילים יש פטורים שמונעים שיבוץ למשימות מסוימות.")
+                    st.write(f"**עבודת לילה:** המערכת חילקה את הנטל כך שכל חייל יקבל מינימום שעות לילה אפשרי.")
             else:
                 st.error("לא נמצא פתרון. נסה להוריד דרישות מנוחה.")
-
-# --- טאב 2: מדריך מפורט (החזרתי הכל) ---
-with tab_guide:
-    st.markdown("### 📖 מדריך מפורט למילוי השבצ\"ק")
-    st.markdown('<div class="info-box">פעלו לפי ההנחיות כדי להבטיח שהאלגוריתם יפיק את התוצאה הטובה ביותר.</div>', unsafe_allow_html=True)
-    st.markdown("""
-    <table class="guide-table">
-        <tr><th>עמודה</th><th>הסבר טכני</th><th>דוגמה</th></tr>
-        <tr><td><b>משך_משמרת</b></td><td>כמה שעות רצופות חייל "נעול" במשימה.</td><td>4 (החייל לא יוחלף באמצע 4 שעות).</td></tr>
-        <tr><td><b>שעות_מנוחה_אחרי</b></td><td>כמה שעות חובה לתת לחייל לנוח בסיום.</td><td>8 (חסימה מוחלטת משיבוץ ל-8 שעות).</td></tr>
-        <tr><td><b>אישור_חפיפה</b></td><td>האם המשימה מאפשרת משימה נוספת במקביל?</td><td>True לכוננות, False לשמירה.</td></tr>
-        <tr><td><b>פטורים</b></td><td>קודי משימה (מהקובץ השני) שהחייל לא מבצע.</td><td>1, 2 (מופרד בפסיקים).</td></tr>
-    </table>
-    """, unsafe_allow_html=True)
-
-# --- טאב 3: תבניות (החזרתי הכל) ---
-with tab_templates:
-    st.subheader("📥 הורדת תבניות עבודה")
-    col_ex1, col_ex2 = st.columns(2)
-    with col_ex1:
-        s_ex = pd.DataFrame({"מספר_אישי": [1001, 1002], "שם": ["ישראל ישראלי", "יוסי כהן"], "פטורים": ["", "1"]})
-        st.write("**תבנית חיילים:**")
-        st.dataframe(s_ex, hide_index=True)
-        st.download_button("הורד תבנית חיילים", data=to_excel_styled(s_ex), file_name="Soldiers_Template.xlsx")
-    with col_ex2:
-        t_ex = pd.DataFrame({"קוד_משימה": [1, 2], "שם": ["שמירה", "מטבח"], "כוח_אדם_נדרש": [1, 2], "משך_משמרת": [4, 6], "שעות_מנוחה_אחרי": [8, 0]})
-        st.write("**תבנית משימות:**")
-        st.dataframe(t_ex, hide_index=True)
-        st.download_button("הורד תבנית משימות", data=to_excel_styled(t_ex), file_name="Tasks_Template.xlsx")

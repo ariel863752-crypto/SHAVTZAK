@@ -5,25 +5,33 @@ import io
 import plotly.express as px
 
 # ==========================================
-# 1. עיצוב ממשק RTL וסטיילינג (שבצ"ק)
+# 1. עיצוב ממשק RTL וסטיילינג מקצועי
 # ==========================================
 st.set_page_config(page_title="מערכת שבצ''ק חכמה", page_icon="🪖", layout="wide")
 
 st.markdown("""
     <style>
+    /* הגדרות כיוון ויישור עברית */
     .stApp { direction: rtl; text-align: right; background-color: #fcfcfc; color: #333; }
     .stMarkdown, .stAlert, p, span, div { text-align: right; direction: rtl; }
+    
+    /* כותרת ראשית */
     .main-title { color: #2d5a27; font-size: 45px; font-weight: bold; border-bottom: 4px solid #e67e22; padding-bottom: 10px; margin-bottom: 25px; }
-    .guide-table { width: 100%; border-collapse: collapse; margin-top: 20px; background-color: white; border: 1px solid #ddd; }
-    .guide-table th { background-color: #2d5a27; color: white; padding: 12px; }
-    .guide-table td { padding: 10px; border: 1px solid #ddd; font-size: 16px; }
+    
+    /* עיצוב טבלאות מדריך */
+    .guide-table { width: 100%; border-collapse: collapse; margin-top: 15px; margin-bottom: 25px; background-color: white; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+    .guide-table th { background-color: #2d5a27; color: white; padding: 12px; text-align: right; border: 1px solid #ddd; }
+    .guide-table td { padding: 10px; border: 1px solid #ddd; font-size: 15px; }
+    
+    /* עיצוב כפתור כתום בולט */
     div.stButton > button:first-child {
         background-color: #e67e22 !important;
         color: white !important;
         font-weight: bold !important;
+        font-size: 18px !important;
+        border-radius: 8px !important;
         width: 100%;
         height: 3.5em;
-        border-radius: 10px !important;
         border: none;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
@@ -57,8 +65,7 @@ class Task:
 # ==========================================
 def solve_scheduling(soldiers, tasks, num_hours=24):
     model = cp_model.CpModel()
-    x = {}      
-    start = {}  
+    x, start = {}, {}
 
     for s in soldiers:
         for t in tasks:
@@ -69,11 +76,11 @@ def solve_scheduling(soldiers, tasks, num_hours=24):
     for s in soldiers:
         for t in tasks:
             for h in range(num_hours):
-                # אילוץ רציפות המשמרת
+                # רציפות המשמרת
                 relevant_starts = [start[s.soldier_id, t.task_id, i] for i in range(max(0, h - t.shift_duration + 1), h + 1)]
                 model.Add(x[s.soldier_id, t.task_id, h] == sum(relevant_starts))
                 
-                # אילוץ מנוחה לאחר משימה מעייפת
+                # מנוחה לאחר משימה
                 if t.rest_duration > 0:
                     total_busy = t.shift_duration + t.rest_duration
                     for next_h in range(h + 1, min(h + total_busy, num_hours)):
@@ -99,7 +106,7 @@ def solve_scheduling(soldiers, tasks, num_hours=24):
             if t.task_id in s.restricted_tasks:
                 for h in range(num_hours): model.Add(x[s.soldier_id, t.task_id, h] == 0)
 
-    # אופטימיזציה: הוגנות + שינה (22:00 עד 08:00)
+    # אופטימיזציה: הוגנות + שינת לילה (22:00-08:00)
     night_hours = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7]
     s_loads = [sum(x[s.soldier_id, t.task_id, h] for t in tasks for h in range(num_hours)) for s in soldiers]
     max_load = model.NewIntVar(0, num_hours, 'max_load')
@@ -109,7 +116,7 @@ def solve_scheduling(soldiers, tasks, num_hours=24):
     model.Minimize(30 * max_load + night_work)
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 20.0
+    solver.parameters.max_time_in_seconds = 25.0
     status = solver.Solve(model)
 
     if status in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
@@ -138,15 +145,15 @@ def to_excel(df):
     return output.getvalue()
 
 # ==========================================
-# 4. ממשק המשתמש (Tabs & Insights)
+# 4. ממשק המשתמש (Tabs)
 # ==========================================
-st.markdown("<div class='main-title'>שבצ''ק - מערכת שיבוץ וניתוח נתונים</div>", unsafe_allow_html=True)
+st.markdown("<div class='main-title'>שבצ''ק - מערכת שיבוץ כוחות חכמה</div>", unsafe_allow_html=True)
 
 tab_run, tab_guide, tab_templates = st.tabs(["🚀 ביצוע שיבוץ", "📖 מדריך למילוי שבצ''ק", "📥 תבניות אקסל"])
 
 with tab_templates:
-    st.subheader("הורדת תבניות אקסל")
-    s_tmp = pd.DataFrame([{'מספר_אישי': 1001, 'שם': 'חייל א', 'פטורים': ''}])
+    st.subheader("📥 הורדת תבניות עבודה")
+    s_tmp = pd.DataFrame([{'מספר_אישי': 1001, 'שם': 'ישראל ישראלי', 'פטורים': '5'}])
     t_tmp = pd.DataFrame([{'קוד_משימה': 1, 'שם': 'שמירה', 'כוח_אדם_נדרש': 1, 'משך_משמרת': 4, 'שעות_מנוחה_אחרי': 8, 'אישור_חפיפה': False, 'שעות_פעילות': 'all'}])
     c1, c2 = st.columns(2)
     with c1: st.download_button("📥 הורד תבנית חיילים", data=to_excel(s_tmp), file_name="Template_Soldiers.xlsx")
@@ -154,16 +161,32 @@ with tab_templates:
 
 with tab_guide:
     st.subheader("📖 מדריך למילוי שבצ''ק - הגדרות מבצעיות")
+    
+    st.markdown("#### 1️⃣ קובץ חיילים (Soldiers)")
     st.markdown("""
     <table class="guide-table">
         <tr><th>עמודה</th><th>מה למלא?</th><th>למה זה חשוב?</th></tr>
-        <tr><td><b>משך_משמרת</b></td><td>שעות רצופות (למשל 4)</td><td>החייל "יינעל" למשימה ולא יוחלף באמצע.</td></tr>
-        <tr><td><b>שעות_מנוחה_אחרי</b></td><td>שעות הפסקה (למשל 8)</td><td>המערכת תמנע שיבוץ נוסף עד שהחייל יסיים לנוח.</td></tr>
-        <tr><td><b>אישור_חפיפה</b></td><td>True לכוננות</td><td>מאפשר לחייל לבצע את המשימה במקביל לאחרת.</td></tr>
-        <tr><td><b>שעות_פעילות</b></td><td>all או שעות (8,9)</td><td>קובע מתי העמדה חייבת להיות מאוישת.</td></tr>
+        <tr><td><b>מספר_אישי</b></td><td>מספר זיהוי ייחודי לכל חייל.</td><td>מונע כפילויות במערכת השיבוץ.</td></tr>
+        <tr><td><b>שם</b></td><td>שם החייל כפי שיופיע בלוח.</td><td>זיהוי ברור בלוח השיבוץ הסופי.</td></tr>
+        <tr><td><b>פטורים</b></td><td>מספרי 'קוד משימה' (למשל 1, 5).</td><td>מונע שיבוץ חייל למשימה שאסור לו לבצע.</td></tr>
     </table>
     """, unsafe_allow_html=True)
-    st.info("💡 המערכת מתעדפת אוטומטית 7 שעות שינה רצופות בלילה לכל חייל (בין 22:00 ל-08:00).")
+
+    st.markdown("#### 2️⃣ קובץ משימות (Tasks)")
+    st.markdown("""
+    <table class="guide-table">
+        <tr><th>עמודה</th><th>מה למלא?</th><th>למה זה חשוב?</th></tr>
+        <tr><td><b>קוד_משימה</b></td><td>מספר המשימה (למשל 1).</td><td>חובה להתאמה מול עמודת ה'פטורים'.</td></tr>
+        <tr><td><b>שם</b></td><td>שם המשימה (שער, סיור, מטבח).</td><td>יוצג בלוח השיבוץ לכל שעה.</td></tr>
+        <tr><td><b>כוח_אדם_נדרש</b></td><td>כמות חיילים בעמדה בו-זמנית.</td><td>מבטיח שהעמדה מאוישת לפי הצורך.</td></tr>
+        <tr><td><b>משך_משמרת</b></td><td>שעות רצופות (למשל 4).</td><td>החייל יינעל למשימה ולא יוחלף באמצע.</td></tr>
+        <tr><td><b>שעות_מנוחה_אחרי</b></td><td>שעות הפסקה חובה (למשל 8).</td><td>המערכת תמנע שיבוץ נוסף עד לסיום המנוחה.</td></tr>
+        <tr><td><b>אישור_חפיפה</b></td><td><b>True</b> לכוננות, <b>False</b> לאחרות.</td><td>מאפשר ביצוע המשימה במקביל למשימה אחרת.</td></tr>
+        <tr><td><b>שעות_פעילות</b></td><td><b>all</b> ל-24/7 או שעות (8,9,10).</td><td>קובע מתי העמדה חייבת להיות מאוישת.</td></tr>
+    </table>
+    """, unsafe_allow_html=True)
+    
+    st.info("💡 **ניהול שינה:** המערכת מתעדפת אוטומטית 7 שעות שינה רצופות בלילה (בין 22:00 ל-08:00) לכל חייל.")
 
 with tab_run:
     col_u1, col_u2 = st.columns(2)
@@ -184,34 +207,20 @@ with tab_run:
                     st.table(final_df)
                     st.download_button("📥 הורד לוח סופי (Excel)", data=to_excel(final_df), file_name="Final_Shavtzak.xlsx", use_container_width=True)
                     
-                    # --- לוח מחוונים ותובנות ---
                     st.divider()
                     st.subheader("📊 ניתוח עומסים ותובנות מערכת")
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("ממוצע שעות מחלקתי", f"{final_df['סך שעות'].mean():.1f}")
+                    m2.metric("חיילים שעבדו בלילה", f"{final_df[final_df['שעות לילה'] > 0].shape[0]}")
+                    m3.metric("פער עומס (מקס'-מינ')", f"{(final_df['סך שעות'].max() - final_df['סך שעות'].min()):.0f} ש'")
                     
-                    col_m1, col_m2, col_m3 = st.columns(3)
-                    col_m1.metric("ממוצע שעות מחלקתי", f"{final_df['סך שעות'].mean():.1f}")
-                    col_m2.metric("חיילים שעבדו בלילה", f"{final_df[final_df['שעות לילה'] > 0].shape[0]}")
-                    col_m3.metric("פער עומס (מקסימום-מינימום)", f"{(final_df['סך שעות'].max() - final_df['סך שעות'].min()):.0f} ש'")
+                    st.plotly_chart(px.bar(final_df, x="שם", y="סך שעות", color="סך שעות", title="חלוקת עומס כללית", color_continuous_scale="Greens"), use_container_width=True)
+                    st.plotly_chart(px.bar(final_df, x="שם", y="שעות לילה", title="פגיעה בשינה (22:00 עד 08:00)", color="שעות לילה", color_continuous_scale="Reds"), use_container_width=True)
                     
-                    st.plotly_chart(px.bar(final_df, x="שם", y="סך שעות", color="סך שעות", title="חלוקת עומס כללית (הוגנות)", color_continuous_scale="Greens"), use_container_width=True)
-                    st.plotly_chart(px.bar(final_df, x="שם", y="שעות לילה", title="פגיעה בשינת לילה (22:00-08:00)", color="שעות לילה", color_continuous_scale="Reds"), use_container_width=True)
-                    
-                    # --- הסבר ה"למה" המורכב ---
-                    st.markdown("#### 💡 למה הלו\"ז נראה ככה?")
-                    with st.expander("לחץ כאן לניתוח הסיבות לשיבוץ"):
-                        # 1. ניתוח לילה
+                    with st.expander("💡 למה הלו\"ז נראה ככה?"):
                         night_req = t_df[t_df['שעות_פעילות'].astype(str).str.contains('all|22|23|0|1|2|3|4|5|6|7')]['כוח_אדם_נדרש'].sum()
-                        st.write(f"**עבודה בלילה:** ישנן משימות הדורשות {night_req} חיילים בו-זמנית בלילה. האלגוריתם נאלץ לשבץ חיילים בגלל דרישת האיוש המבצעית למרות השאיפה לשינה.")
-                        
-                        # 2. ניתוח פערי שעות
+                        st.write(f"**עבודה בלילה:** יש דרישה ל-{night_req} חיילים בלילה. המערכת חייבת לשבץ אותם למרות השאיפה לשינה.")
                         max_s = final_df[final_df["סך שעות"] == final_df["סך שעות"].max()]["שם"].tolist()
-                        min_s = final_df[final_df["סך שעות"] == final_df["סך שעות"].min()]["שם"].tolist()
-                        st.write(f"**החיילים העמוסים ביותר:** {', '.join(max_s)}. ככל הנראה אין להם פטורים מגבילים, מה שהופך אותם לזמינים למילוי 'חורים' שנוצרו עקב מנוחות של אחרים.")
-                        st.write(f"**החיילים הפחות עמוסים:** {', '.join(min_s)}. הסיבה היא בדרך כלל ריבוי פטורים שהזנת באקסל, המונעים שיבוץ למשימות הליבה.")
-                        
-                        # 3. השפעת המנוחה
-                        rest_impact = t_df[t_df['שעות_מנוחה_אחרי'] > 4].shape[0]
-                        if rest_impact > 0:
-                            st.write(f"**אילוץ מנוחה:** קיימות {rest_impact} משימות הדורשות מנוחה ארוכה. ברגע שחייל משובץ אליהן, הוא מוצא מהסבב למספר רב של שעות, מה שמגדיל את העומס על שאר המחלקה.")
+                        st.write(f"**העמוסים ביותר:** {', '.join(max_s)}. אלו חיילים ללא פטורים שזמינים למילוי 'חורים' שנוצרו עקב מנוחות של אחרים.")
                 else:
-                    st.error("❌ לא נמצא פתרון. כנראה שיש יותר משימות ממה שכוח האדם יכול להכיל תחת מגבלות המנוחה והשינה.")
+                    st.error("❌ לא נמצא פתרון. בדוק אם יש מספיק חיילים למשימות ולמנוחות הנדרשות.")

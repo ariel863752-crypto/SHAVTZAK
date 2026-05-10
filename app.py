@@ -145,7 +145,7 @@ with tab1:
                     s_list = [Soldier(r['מספר_אישי'], r['שם'], r.get('הכשרות'), r.get('פטורים'), r.get('מקסימום_שעות_ברצף')) for _, r in s_df.iterrows()]
                     t_list = [Task(r['קוד_משימה'], r['שם'], r['כוח_אדם_נדרש'], r['משך_זמן'], r.get('הכשרות_נדרשות'), r.get('אישור_חפיפה'), r.get('שעות_פעילות')) for _, r in t_df.iterrows()]
                     final = solve_scheduling(s_list, t_list)
-                    if final is not None:
+                    if final is not None: 
                         st.balloons()
                         st.dataframe(final)
                     else:

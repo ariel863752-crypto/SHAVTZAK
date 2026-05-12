@@ -73,44 +73,63 @@ div.stButton > button:first-child { background: linear-gradient(135deg, #2d5a27,
 div.stButton > button:first-child:hover { transform: translateY(-1px) !important; box-shadow: 0 6px 20px rgba(45,90,39,0.4) !important; }
 [data-testid="stDownloadButton"] > button { background: #b84d00 !important; color: white !important; font-weight: 600 !important; border-radius: 10px !important; border: none !important; }
 
-/* ── העלאת קבצים מתוקן (ללא כפילויות ובעברית) ── */
+/* ── העלאת קבצים (תיקון מלא לכפילויות RTL) ── */
 [data-testid="stFileUploader"] {
-    background: white; border-radius: 12px; padding: 14px 16px; border: 2px dashed #c0d8bc;
-    direction: rtl; text-align: center;
+    background: white; border-radius: 12px; padding: 14px 16px; border: 2px dashed #c0d8bc; direction: rtl; text-align: right;
 }
 [data-testid="stFileUploader"]:hover { border-color: #2d5a27; }
 
-/* סידור הפריסה הפנימית שתמנע מהאלמנטים לעלות אחד על השני */
+/* נטרול הקריסה הפנימית של האלמנטים */
 [data-testid="stFileUploadDropzone"] {
+    direction: ltr !important; 
     display: flex !important;
     flex-direction: column !important;
     align-items: center !important;
     justify-content: center !important;
-    gap: 10px;
 }
 
-/* הסתרת שאריות הטקסט והאייקון המקוריים באנגלית שיוצרים את הכפילות */
-[data-testid="stFileUploadDropzone"] > div > svg,
-[data-testid="stFileUploadDropzone"] > div > span,
-[data-testid="stFileUploadDropzone"] > div > small {
+/* הסתרת טקסט ה-upload של הדפדפן */
+[data-testid="stFileUploadDropzone"] input {
+    color: transparent !important;
+}
+[data-testid="stFileUploadDropzone"] input::file-selector-button {
     display: none !important;
 }
 
-/* הזרקת טקסט נקי וחדש בעברית למרכז הקוביה */
+/* הסתרת הטקסט המקורי באנגלית */
+[data-testid="stFileUploadDropzone"] > div > span {
+    display: none !important;
+}
+
+/* הוספת טקסט גרירה בעברית */
 [data-testid="stFileUploadDropzone"] > div::before {
-    content: '📄 גרור והשלך קובץ אקסל לכאן';
+    content: '📄 גרור קובץ אקסל לכאן';
     display: block;
     font-size: 16px;
     font-weight: 600;
     color: #2d5a27;
+    margin-bottom: 12px;
+    direction: rtl;
     text-align: center;
 }
 
-/* סידור מיקום הכפתור ביחס לטקסט */
+/* מחיקת ה-Upload המקורי מהכפתור והחלפתו לעברית */
 [data-testid="stFileUploadDropzone"] button {
+    color: transparent !important; 
     position: relative !important;
-    z-index: 10;
 }
+[data-testid="stFileUploadDropzone"] button::after {
+    content: 'בחר קובץ' !important;
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    color: #1a3d17 !important;
+    font-family: 'Heebo', sans-serif !important;
+    font-weight: 600 !important;
+    direction: rtl !important;
+}
+
 
 /* ── טבלאות ── */
 [data-testid="stTable"] table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: white; direction: rtl; }

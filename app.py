@@ -10,7 +10,7 @@ from ortools.sat.python import cp_model
 st.set_page_config(page_title="מערכת שבצ''ק חכמה", page_icon="🪖", layout="wide")
 
 # ══════════════════════════════════════════════════════════════════
-# 2. CSS — RTL מלא + עיצוב 
+# 2. CSS — RTL מלא + תיקון העלאת קבצים (נגישות + כפילות)
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
@@ -73,26 +73,14 @@ div.stButton > button:first-child { background: linear-gradient(135deg, #2d5a27,
 div.stButton > button:first-child:hover { transform: translateY(-1px) !important; box-shadow: 0 6px 20px rgba(45,90,39,0.4) !important; }
 [data-testid="stDownloadButton"] > button { background: #b84d00 !important; color: white !important; font-weight: 600 !important; border-radius: 10px !important; border: none !important; }
 
-/* ── תיקון כפילות Upload בלבד ── */
+/* ── העלאת קבצים - נגיש וללא כפילויות ── */
 [data-testid="stFileUploader"] {
-    direction: rtl;
-    text-align: right;
+    background: white; border-radius: 12px; padding: 14px 16px; border: 2px dashed #c0d8bc; direction: rtl; text-align: right;
 }
-
-/* זה השורות שמעלימות את ה-upload של הדפדפן שנמרח על הכפתור */
+[data-testid="stFileUploader"]:hover { border-color: #2d5a27; }
 [data-testid="stFileUploadDropzone"] input {
-    color: transparent !important;
+    color: transparent !important; /* מעלים את ה-Upload הכפול אך שומר על נגישות למקלדת */
 }
-
-[data-testid="stFileUploadDropzone"] input::file-selector-button {
-    display: none !important;
-}
-
-/* מוודא שהכפתור המקורי של Streamlit נשאר במקום שלו */
-[data-testid="stFileUploadDropzone"] button {
-    z-index: 10;
-}
-
 
 /* ── טבלאות ── */
 [data-testid="stTable"] table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: white; direction: rtl; }
@@ -114,9 +102,10 @@ div.stButton > button:first-child:hover { transform: translateY(-1px) !important
 """, unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════
-# 3. פונקציות עזר ומחלקות נתונים (v6.1)
+# 3. פונקציות עזר ומחלקות נתונים (v6.2)
 # ══════════════════════════════════════════════════════════════════
 def parse_time_ranges(val):
+    """v6.2: איטום חציית חצות עם modulo 24 כדי למנוע חריגות אינדקס"""
     if pd.isna(val) or str(val).strip().lower() in ('all', '', 'nan'):
         return list(range(24))
     res = set()
@@ -127,12 +116,15 @@ def parse_time_ranges(val):
             if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
                 s, e = int(parts[0]), int(parts[1])
                 if s <= e:
-                    res.update(range(s, e + 1))
+                    for x in range(s, e + 1):
+                        res.add(x % 24)
                 else: 
-                    res.update(range(s, 24))
-                    res.update(range(0, e + 1))
+                    for x in range(s, 24):
+                        res.add(x % 24)
+                    for x in range(0, e + 1):
+                        res.add(x % 24)
         elif part.isdigit():
-            res.add(int(part))
+            res.add(int(part) % 24)
     return list(res)
 
 class Soldier:
@@ -166,7 +158,6 @@ class Task:
         self.active_hours = parse_time_ranges(hours)
         self.intensity = int(intensity) if pd.notna(intensity) else 1
 
-        # תפקידים חסומים למשימה (Negative Role Constraint)
         if pd.notna(blocked_roles) and str(blocked_roles).strip() not in ("", "nan"):
             self.blocked_roles = [r.strip() for r in str(blocked_roles).split(',') if r.strip()]
         else:
@@ -205,12 +196,13 @@ def to_excel_styled(df: pd.DataFrame, sheet_name: str = 'שבצ"ק', include_ind
     return output.getvalue()
 
 # ══════════════════════════════════════════════════════════════════
-# 5. מנוע CP-SAT (v6.1 - כולל תפקידים חסומים)
+# 5. מנוע CP-SAT (v6.2 - Ironclad Edition)
 # ══════════════════════════════════════════════════════════════════
 def solve_scheduling(soldiers, tasks, num_hours=24):
     model = cp_model.CpModel()
     x, start = {}, {}
-    SLEEP_WINDOW = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    # v6.2: 11 hours exact window
+    SLEEP_WINDOW = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8]
 
     for s in soldiers:
         for t in tasks:
@@ -226,36 +218,38 @@ def solve_scheduling(soldiers, tasks, num_hours=24):
                 model.Add(sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots))) == 0)
 
         for t in tasks:
-            # אילוץ חדש: חסימת תפקידים שלמה (אם החייל מחזיק באחד התפקידים החסומים, הוא לא ישובץ כלל למשימה)
-            if any(role in t.blocked_roles for role in s.roles):
+            # v6.2: אופטימיזציית מודל - הוצאת הפטורים מחוץ ללולאת ה-slots לחיסכון במשאבים
+            if any(role in t.blocked_roles for role in s.roles) or (t.task_id in s.restricted_tasks):
                 for slot_idx in range(len(t.slots)):
                     for h in range(num_hours):
                         model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
+                continue # מונע יצירת אילוצים נוספים למשימה זו עבור חייל זה
 
             for slot_idx, required_role in enumerate(t.slots):
-                # התאמת כישורים ותפקידים
+                # התאמת כישורים
                 if required_role is not None and required_role not in s.roles:
                     for h in range(num_hours): model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
-                
-                # פטורים כלליים
-                if t.task_id in s.restricted_tasks:
-                    for h in range(num_hours): model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
+                    continue
 
                 for h in range(num_hours):
+                    # הגדרת משמרת ומעגליות
                     relevant_starts = []
                     for i in range(t.shift_duration):
                         start_h = (h - i) % num_hours
                         relevant_starts.append(start[s.soldier_id, t.task_id, slot_idx, start_h])
                     model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == sum(relevant_starts))
 
+                    # v6.2: אילוץ מנוחה עם rest_offset למניעת התנגשויות אינדקס
                     if t.rest_duration > 0:
-                        for i in range(t.shift_duration, t.shift_duration + t.rest_duration):
-                            rest_h = (h + i) % num_hours
+                        for rest_offset in range(t.shift_duration, t.shift_duration + t.rest_duration):
+                            rest_h = (h + rest_offset) % num_hours
                             for other_t in tasks:
                                 if not other_t.allow_overlap:
                                     for other_slot in range(len(other_t.slots)):
-                                        model.AddImplication(start[s.soldier_id, t.task_id, slot_idx, h], 
-                                                             x[s.soldier_id, other_t.task_id, other_slot, rest_h].Not())
+                                        model.AddImplication(
+                                            start[s.soldier_id, t.task_id, slot_idx, h], 
+                                            x[s.soldier_id, other_t.task_id, other_slot, rest_h].Not()
+                                        )
 
     for t in tasks:
         for slot_idx in range(len(t.slots)):
@@ -271,6 +265,7 @@ def solve_scheduling(soldiers, tasks, num_hours=24):
             blocking = [x[s.soldier_id, t.task_id, slot_idx, h] for t in tasks if not t.allow_overlap for slot_idx in range(len(t.slots))]
             model.Add(sum(blocking) <= 1)
 
+    # ── פונקציות מטרה מאוזנות ──
     s_total_hours, s_intensity_scores, sleep_penalties = [], [], []
 
     for s in soldiers:
@@ -280,25 +275,38 @@ def solve_scheduling(soldiers, tasks, num_hours=24):
         intensity_score = sum(x[s.soldier_id, t.task_id, slot, h] * t.intensity for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
         s_intensity_scores.append(intensity_score)
 
+        # v6.2: קנסות שינה חוקיים ולינאריים לחלוטין
         night_work = sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks if not t.allow_overlap for slot in range(len(t.slots)) for h in SLEEP_WINDOW)
-        penalty = model.NewIntVar(0, 12, f'sleep_pen_{s.soldier_id}')
-        model.AddMaxEquality(penalty, [0, night_work - 5])
+        
+        night_work_var = model.NewIntVar(0, len(SLEEP_WINDOW), f'nw_{s.soldier_id}')
+        model.Add(night_work_var == night_work)
+        
+        shifted = model.NewIntVar(-len(SLEEP_WINDOW), len(SLEEP_WINDOW), f'shifted_{s.soldier_id}')
+        # עונש יתחיל רק אם עבד מעל 4 שעות בלילה (כדי להבטיח 11 - 4 = 7 שעות שינה)
+        model.Add(shifted == night_work_var - 4)
+        
+        penalty = model.NewIntVar(0, len(SLEEP_WINDOW), f'sleep_pen_{s.soldier_id}')
+        model.AddMaxEquality(penalty, [model.NewConstant(0), shifted])
         sleep_penalties.append(penalty)
 
+    # v6.2: משתני ביניים חוקיים להוגנות ועצימות
     max_load = model.NewIntVar(0, 1000, 'max_load')
     min_load = model.NewIntVar(0, 1000, 'min_load')
     model.AddMaxEquality(max_load, s_total_hours)
     model.AddMinEquality(min_load, s_total_hours)
-    load_diff = max_load - min_load
+    load_diff = model.NewIntVar(0, 1000, 'load_diff')
+    model.Add(load_diff == max_load - min_load)
 
     max_int = model.NewIntVar(0, 1000, 'max_int')
     min_int = model.NewIntVar(0, 1000, 'min_int')
     model.AddMaxEquality(max_int, s_intensity_scores)
     model.AddMinEquality(min_int, s_intensity_scores)
-    int_diff = max_int - min_int
+    int_diff = model.NewIntVar(0, 1000, 'int_diff')
+    model.Add(int_diff == max_int - min_int)
 
     total_sleep_penalty = sum(sleep_penalties)
 
+    # מזעור משוקלל חוקי
     model.Minimize(100 * load_diff + 50 * int_diff + 200 * total_sleep_penalty)
 
     solver = cp_model.CpSolver()
@@ -324,7 +332,7 @@ def solve_scheduling(soldiers, tasks, num_hours=24):
             
         row["סך שעות"] = sum(1 for h in range(num_hours) if any(solver.Value(x[s.soldier_id, t.task_id, slot, h]) == 1 for t in tasks for slot in range(len(t.slots))))
         row["מדד עצימות"] = sum(solver.Value(x[s.soldier_id, t.task_id, slot, h]) * t.intensity for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
-        row["שעות שינה רצויות (22-09)"] = 12 - night_work_count
+        row["שעות שינה רצויות (22-09)"] = len(SLEEP_WINDOW) - night_work_count # v6.2: חישוב מדויק לפי החלון הנתון
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -336,8 +344,8 @@ def solve_scheduling(soldiers, tasks, num_hours=24):
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="app-header">
-  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v6.1)</h1>
-  <p>אופטימיזציה כוללת של חסימות, משימות עצימות, שעון מעגלי, ואילוצי תפקידים מלאים (חיוביים ושליליים).</p>
+  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v6.2)</h1>
+  <p>גרסת הברזל: אופטימיזציה מקסימלית, ניהול מנוחות מתקדם ומניעת באגים בחלונות זמן.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -345,7 +353,7 @@ tab_run, tab_guide, tab_templates = st.tabs(["🚀  ביצוע שיבוץ", "�
 
 with tab_templates:
     st.markdown("### 📥 הורדת תבניות עבודה")
-    st.markdown('<div class="info-box">הורידו את התבניות המעודכנות, מלאו בהתאם למדריך (10 עמודות משימות, 5 חיילים), ואז חזרו לטאב <b>ביצוע שיבוץ</b>.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="info-box">הורידו את התבניות המעודכנות, מלאו בהתאם למדריך, ואז חזרו לטאב <b>ביצוע שיבוץ</b>.</div>', unsafe_allow_html=True)
 
     s_ex = pd.DataFrame({
         'מספר אישי': [1001, 1002, 1003],
@@ -372,14 +380,14 @@ with tab_templates:
     with c1:
         st.markdown("**👥 תבנית חיילים (5 עמודות)**")
         st.dataframe(s_ex, use_container_width=True, hide_index=True)
-        st.download_button("⬇️ הורד תבנית חיילים", data=to_excel_styled(s_ex, "Soldiers", False), file_name="Soldiers_v6.1.xlsx", use_container_width=True)
+        st.download_button("⬇️ הורד תבנית חיילים", data=to_excel_styled(s_ex, "Soldiers", False), file_name="Soldiers_v6.2.xlsx", use_container_width=True)
     with c2:
         st.markdown("**📋 תבנית משימות (10 עמודות)**")
         st.dataframe(t_ex, use_container_width=True, hide_index=True)
-        st.download_button("⬇️ הורד תבנית משימות", data=to_excel_styled(t_ex, "Tasks", False), file_name="Tasks_v6.1.xlsx", use_container_width=True)
+        st.download_button("⬇️ הורד תבנית משימות", data=to_excel_styled(t_ex, "Tasks", False), file_name="Tasks_v6.2.xlsx", use_container_width=True)
 
 with tab_guide:
-    st.markdown("### 📖 מדריך מלא — גרסת 6.1 (עודכן עם אילוצים שליליים)")
+    st.markdown("### 📖 מדריך מלא — גרסת 6.2 (Ironclad Edition)")
 
     st.markdown("#### 👥 קובץ חיילים — `Soldiers.xlsx`")
     st.markdown("""
@@ -417,9 +425,9 @@ with tab_guide:
 with tab_run:
     col_u1, col_u2 = st.columns(2)
     with col_u1:
-        sf = st.file_uploader("📂 קובץ חיילים (xlsx - v6.1)", type="xlsx", key="sf")
+        sf = st.file_uploader("📂 קובץ חיילים (xlsx - v6.2)", type="xlsx", key="sf")
     with col_u2:
-        tf = st.file_uploader("📂 קובץ משימות (xlsx - v6.1)", type="xlsx", key="tf")
+        tf = st.file_uploader("📂 קובץ משימות (xlsx - v6.2)", type="xlsx", key="tf")
 
     if sf and tf:
         try:
@@ -439,7 +447,7 @@ with tab_run:
         if miss_s or miss_t:
             st.stop()
 
-        if st.button("⚙️ צור שבצ\"ק חכם (v6.1)", use_container_width=True):
+        if st.button("⚙️ צור שבצ\"ק חכם (v6.2)", use_container_width=True):
             with st.spinner("מחשב אופטימיזציה עם התאמת תפקידים ואילוצים שליליים..."):
                 soldiers = [
                     Soldier(
@@ -507,7 +515,7 @@ with tab_run:
                     st.download_button(
                         "📥 הורד לוח שיבוץ (Excel)",
                         data=to_excel_styled(final_df),
-                        file_name="Final_Shavtzak_v6-1.xlsx",
+                        file_name="Final_Shavtzak_v6-2.xlsx",
                         use_container_width=True,
                     )
 
@@ -550,6 +558,6 @@ with tab_run:
         st.markdown("""
         <div class="info-box">
         👆 <b>להתחלת אופטימיזציה:</b> העלו את קובץ החיילים וקובץ המשימות המעודכנים.<br>
-        אין לכם תבניות בגרסה 6.1? עברו לטאב <b>תבניות אקסל</b> למעלה והורידו אותן.
+        אין לכם תבניות בגרסה 6.2? עברו לטאב <b>תבניות אקסל</b> למעלה והורידו אותן.
         </div>
         """, unsafe_allow_html=True)

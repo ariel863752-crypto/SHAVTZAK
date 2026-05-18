@@ -248,31 +248,21 @@ def to_excel_styled(df: pd.DataFrame, sheet_name: str = 'שבצ"ק',
 # 5. Greedy hint generator — מאיץ את מציאת FEASIBLE הראשון
 # ══════════════════════════════════════════════════════════════════
 def build_greedy_hints(soldiers, tasks, num_hours=24):
-    """
-    בונה שיבוץ גריידי פשוט: לכל slot×שעה פעילה — מוצא חייל זמין
-    ומחזיר dict של {(sid, tid, slot, h): 0/1}.
-    אין ערובה לחוקיות מלאה — רק hint התחלתי לסולבר.
-    """
     hints = {}
-    # עוקב אחרי "עסוק עד שעה X" לכל חייל
     busy_until = {s.soldier_id: -1 for s in soldiers}
     last_task_end = {s.soldier_id: -1 for s in soldiers}
 
-    # אתחול כל המשתנים ל-0
     for s in soldiers:
         for t in tasks:
             for slot_idx in range(len(t.slots)):
                 for h in range(num_hours):
                     hints[(s.soldier_id, t.task_id, slot_idx, h)] = 0
 
-    # סיבוב: לכל שעה פעילה × slot × משימה — בחר חייל
     soldier_work_hours = {s.soldier_id: 0 for s in soldiers}
 
     for t in tasks:
         for slot_idx, req_role in enumerate(t.slots):
-            prev_assigned_end = -1
             h_list = sorted(t.active_hours)
-            # קבץ שעות רצופות למשמרות
             shifts_start = []
             if h_list:
                 run_start = h_list[0]
@@ -283,7 +273,6 @@ def build_greedy_hints(soldiers, tasks, num_hours=24):
                 shifts_start.append(run_start)
 
             for h in h_list:
-                # בחר חייל עם הכי מעט שעות שזמין
                 best = None
                 best_load = 999999
                 for s in soldiers:
@@ -312,14 +301,7 @@ def build_greedy_hints(soldiers, tasks, num_hours=24):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 6. מנוע CP-SAT v7 — אילוצי מנוחה רכים, תמיד מוצא פתרון
-#
-# שינויים מרכזיים לעומת v6.4:
-#   • אילוץ מנוחה: רך (soft) — קנס ×500 על כל הפרה, לא חסם מוחלט
-#   • Greedy hint — הסולבר מתחיל ממצב כמעט-פתרון → FEASIBLE מהיר
-#   • זמן פתרון: 120 שניות (במקום 45)
-#   • workers: 8 (במקום 4)
-#   • פונקציית מטרה: rest_violations קיבל עדיפות על פני sleep/fairness
+# 6. מנוע CP-SAT v8 — משולב ומתוקן (ללא פרצות אלגוריתמיות!)
 # ══════════════════════════════════════════════════════════════════
 def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24,
                      time_limit: float = 120.0, soft_rest: bool = True):
@@ -384,26 +366,24 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24,
                     ]
                     model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == sum(relevant_starts))
 
-                    # ה. מנוחה — SOFT או HARD לפי מצב
+                    # ה. מנוחה — תקין ומדויק
                     if t.rest_duration > 0 and not t.allow_overlap:
                         rest_window = t.shift_duration + t.rest_duration
+                        # המנוחה נספרת *רק* לאחר סיום המשמרת (החל מהשעה ה-shift_duration)
                         for rest_offset in range(t.shift_duration, min(rest_window, num_hours)):
                             rest_h = (h + rest_offset) % num_hours
                             for other_t in tasks:
                                 if not other_t.allow_overlap:
                                     for other_slot in range(len(other_t.slots)):
                                         if soft_rest:
-                                            # רך: קנס במקום חסם מוחלט
+                                            # רך: אילוץ "אטום" שמכריח לשלם קנס על כל חפיפה
                                             viol = model.NewBoolVar(
                                                 f'rv_{s.soldier_id}_{t.task_id}_{slot_idx}_{h}_{rest_h}_{other_t.task_id}_{other_slot}')
-                                            # אם start[h]=1 וגם x[rest_h]=1 → viol=1
-                                            model.AddBoolAnd([
-                                                start[s.soldier_id, t.task_id, slot_idx, h],
-                                                x[s.soldier_id, other_t.task_id, other_slot, rest_h]
-                                            ]).OnlyEnforceIf(viol)
+                                            model.Add(viol >= start[s.soldier_id, t.task_id, slot_idx, h] + 
+                                                      x[s.soldier_id, other_t.task_id, other_slot, rest_h] - 1)
                                             rest_violation_vars.append(viol)
                                         else:
-                                            # קשיח (כמו v6)
+                                            # קשיח
                                             model.Add(
                                                 x[s.soldier_id, other_t.task_id, other_slot, rest_h] == 0
                                             ).OnlyEnforceIf(start[s.soldier_id, t.task_id, slot_idx, h])
@@ -484,7 +464,6 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24,
     solver.parameters.max_time_in_seconds = time_limit
     solver.parameters.num_search_workers  = 8
     solver.parameters.log_search_progress = False
-    # אסטרטגיית fallback: אם לא נמצא FEASIBLE תוך 60 שניות — הרלקסציה הרכה תעזור
     status = solver.Solve(model)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -531,8 +510,8 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24,
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="app-header">
-  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v7)</h1>
-  <p>אילוצי מנוחה רכים · Greedy hints · תמיד מוצא פתרון · עד 40+ חיילים · 8 ליבות מקבילות</p>
+  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v8)</h1>
+  <p>אילוצי מנוחה רכים מדויקים · Greedy hints · 8 ליבות מקבילות · הגנות מובנות</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -561,7 +540,7 @@ with tab_templates:
         'שעות חסימה': ['', '10-14', ''],
     })
     t_ex = pd.DataFrame({
-        'מס"ד משימה':            [101, 102, 103],
+        'מס"ד משימה':             [101, 102, 103],
         'שם המשימה':             ['סיור רכוב', 'שמירת ש.ג.', 'כוננות קבועה'],
         'סד"כ נדרש למשימה':     [4, 2, 8],
         'משך משמרת':             [4, 4, 24],
@@ -580,7 +559,7 @@ with tab_templates:
         st.download_button(
             "⬇️ הורד תבנית חיילים",
             data=to_excel_styled(s_ex, "Soldiers", False),
-            file_name="Soldiers_v7.xlsx", use_container_width=True,
+            file_name="Soldiers_v8.xlsx", use_container_width=True,
         )
     with c2:
         st.markdown("**📋 תבנית משימות (10 עמודות)**")
@@ -588,7 +567,7 @@ with tab_templates:
         st.download_button(
             "⬇️ הורד תבנית משימות",
             data=to_excel_styled(t_ex, "Tasks", False),
-            file_name="Tasks_v7.xlsx", use_container_width=True,
+            file_name="Tasks_v8.xlsx", use_container_width=True,
         )
 
 # ══════════════════════════════════════════════════════════════════
@@ -617,7 +596,7 @@ with tab_guide:
         <tr><td><b>שם המשימה</b></td><td>שם קצר</td><td>למשל: "סיור רכוב"</td></tr>
         <tr><td><b>סד"כ נדרש</b></td><td>כמות חיילים</td><td>מספר שלם, חובה</td></tr>
         <tr><td><b>משך משמרת</b></td><td>שעות רצופות</td><td>מספר שלם. תומך במשמרות מעגליות</td></tr>
-        <tr><td><b>שעות מנוחה</b></td><td>צינון אחרי משמרת</td><td>ב-v7: אילוץ רך — יישמר ככל האפשר</td></tr>
+        <tr><td><b>שעות מנוחה</b></td><td>צינון אחרי משמרת</td><td>אילוץ רך — המערכת שומרת עליו בקפדנות, ותחרוג רק למניעת עמדה ריקה.</td></tr>
         <tr><td><b>אישור חפיפה</b></td><td>מקביל למשימות אחרות</td><td><code>True</code> = כוננות/קשר. <code>False</code> = שמירה/סיור</td></tr>
         <tr><td><b>שעות פעילות</b></td><td>מתי עמדה קיימת</td><td><code>all</code> / <code>8-12</code> / <code>7,8,9</code></td></tr>
         <tr><td><b>הסמכה נדרשת</b></td><td>תקנים ייעודיים</td><td>למשל: <code>נהג, מפקד</code> — שני תקנים שמורים</td></tr>
@@ -629,11 +608,11 @@ with tab_guide:
 
     st.markdown("""
     <div class="info-box">
-    <b>💡 v7 — שינויים עיקריים:</b><br>
-    • <b>אילוצי מנוחה רכים:</b> הפרת מנוחה מקבלת קנס ×500 — לא חסם מוחלט. המערכת תמיד תמצא פתרון.<br>
-    • <b>Greedy hints:</b> הסולבר מתחיל ממצב כמעט-פתרון → FEASIBLE בשניות גם ל-40+ חיילים.<br>
-    • <b>8 ליבות מקבילות, 120 שניות:</b> מרחב חיפוש גדול בהרבה.<br>
-    • <b>דוח הפרות:</b> המערכת מציגה כמה הפרות מנוחה היו — כדי שהמפקד יידע.
+    <b>💡 v8 — שינויים עיקריים:</b><br>
+    • <b>אילוצי מנוחה חכמים:</b> המערכת רושמת חריגות אמת. קנס של ×500 מתמטי על כל פגיעה במנוחה מבטיח שחריגה תבוצע <b>אך ורק בלית ברירה</b>.<br>
+    • <b>היגיון זמן מתוקן:</b> מנוחה נספרת בצורה מדויקת <u>אך ורק</u> לאחר תום משך המשמרת (ולא תוך כדי).<br>
+    • <b>Greedy hints:</b> הסולבר מקבל רמזים חכמים, מה שמאיץ מציאת פתרונות לכוחות גדולים.<br>
+    • <b>8 ליבות מקבילות:</b> ניצול מקסימלי של כוח החישוב עד לזמן שנגדיר.
     </div>
     """, unsafe_allow_html=True)
 
@@ -647,14 +626,13 @@ with tab_run:
     with col_u2:
         tf = st.file_uploader("📂 קובץ משימות (xlsx)", type="xlsx", key="tf")
 
-    # הגדרות מתקדמות
     with st.expander("⚙️ הגדרות מתקדמות"):
         time_limit = st.slider("זמן מקסימלי לפתרון (שניות)", 30, 300, 120, 15)
         soft_rest  = st.toggle("אילוצי מנוחה רכים (מומלץ לכוחות גדולים)", value=True)
         st.markdown("""
         <div class="info-box" style="font-size:12px">
-        <b>מנוחה רכה:</b> המערכת תנסה לשמור על מנוחה, אך אם אין ברירה — תשבץ גם בלעדיה ותדווח.
-        <b>מנוחה קשיחה:</b> אי-אפשר להפר מנוחה — עשויה לא למצוא פתרון בכוחות גדולים.
+        <b>מנוחה רכה (מופעל):</b> המערכת תעשה כל מאמץ לשמור על מנוחה, אך במצב קריטי תשבץ בכל זאת ותדווח למפקד.<br>
+        <b>מנוחה קשיחה (כבוי):</b> אסור להפר מנוחה בשום פנים. אם אין מספיק חיילים, המערכת תקרוס ותחזיר שגיאה.
         </div>
         """, unsafe_allow_html=True)
 
@@ -678,8 +656,8 @@ with tab_run:
         if miss_s or miss_t:
             st.stop()
 
-        if st.button('⚙️ צור שבצ"ק חכם (v7)', use_container_width=True):
-            with st.spinner("בונה מודל וגריידי hint..."):
+        if st.button('⚙️ צור שבצ"ק חכם (v8)', use_container_width=True):
+            with st.spinner("בונה מודל ומשקלל אילוצים..."):
                 soldiers = [
                     Soldier(r['מספר אישי'], r['שם מלא'],
                             r.get('פטורים', ''), r.get('הסמכות', ''),
@@ -706,7 +684,7 @@ with tab_run:
                     unsafe_allow_html=True,
                 )
             else:
-                with st.spinner(f"מריץ אופטימיזציה ({time_limit}ש׳, 8 ליבות)..."):
+                with st.spinner(f"מריץ אופטימיזציה מבוזרת ({time_limit}ש׳ מקסימום, 8 ליבות)..."):
                     final_df, rest_viols = solve_scheduling(
                         soldiers, tasks,
                         time_limit=time_limit,
@@ -722,14 +700,14 @@ with tab_run:
                     # ── אזהרת הפרות מנוחה ──
                     if rest_viols > 0:
                         st.markdown(
-                            f'<div class="warn-box">⚠️ <b>{rest_viols} הפרות מנוחה</b> נמצאו בפתרון — '
-                            f'המערכת שיבצה למרות אילוץ המנוחה כדי לכסות את כל העמדות. '
+                            f'<div class="warn-box">⚠️ <b>{rest_viols} הפרות מנוחה אמיתיות</b> נמצאו בפתרון — '
+                            f'המערכת שיבצה למרות אילוץ המנוחה כדי לכסות את כל העמדות (קנס מתמטי כבד הופעל). '
                             f'מומלץ לבדוק את השיבוץ ולאזן ידנית אם נדרש.</div>',
                             unsafe_allow_html=True,
                         )
                     else:
                         st.markdown(
-                            '<div class="info-box">✅ כל אילוצי המנוחה נשמרו!</div>',
+                            '<div class="info-box">✅ כל אילוצי המנוחה נשמרו באופן מלא! לא בוצעה שום חריגה.</div>',
                             unsafe_allow_html=True,
                         )
 
@@ -769,7 +747,7 @@ with tab_run:
                     st.download_button(
                         "📥 הורד לוח שיבוץ (Excel)",
                         data=to_excel_styled(final_df),
-                        file_name="Final_Shavtzak_v7.xlsx",
+                        file_name="Final_Shavtzak_v8.xlsx",
                         use_container_width=True,
                     )
 
@@ -792,16 +770,16 @@ with tab_run:
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
-                    with st.expander("💡 תובנות אופטימיזציה"):
+                    with st.expander("💡 תובנות אופטימיזציה לגרסה v8"):
                         max_s = final_df[final_df["סך שעות"] == final_df["סך שעות"].max()]["שם"].tolist()
                         st.markdown(f"""
 **חיילים עמוסים:** {', '.join(max_s)} — {final_df['סך שעות'].max()} שעות.
 
 **פער הוגנות:** {gap_h} שעות — {'חלוקה אחידה.' if gap_h <= 2 else 'מומלץ להוסיף חיילים לאיזון.' if gap_h > 4 else 'חלוקה סבירה.'}
 
-**שינה:** ממוצע {avg_sleep:.1f} שעות. קנס ×200 על כל שעת לילה מעל 4.
+**שינה:** ממוצע {avg_sleep:.1f} שעות. הופעל קנס ×200 מתמטי על כל שעת עבודת לילה מעבר ל-4 שעות (כדי להגן על חלון שינה של 7 שעות).
 
-**מנוחה:** {'כל אילוצי המנוחה נשמרו.' if rest_viols == 0 else f'{rest_viols} הפרות מנוחה — סולבר נאלץ לוותר על מנוחה לכיסוי עמדות. שקלו להוסיף כוח אדם.'}
+**מנוחה חכמה:** {'המערכת הצליחה לשבץ ללא שום חריגת מנוחה! עבודה יפה.' if rest_viols == 0 else f'{rest_viols} הפרות מנוחה — הסולבר נלחם כדי להימנע מכך אך נאלץ להקריב מנוחות אלו במקום להשאיר את העמדה ריקה. הקנס שעליו שילם המודל: {rest_viols * 500} נקודות.'}
                         """)
                 else:
                     st.markdown("""
@@ -811,7 +789,7 @@ with tab_run:
                     • יש משימות עם הסמכות נדרשות שאין מספיק חיילים מוסמכים לאיישן.<br>
                     • שעות חסימה של חיילים חוסמות שעות קריטיות שאין מי שיאייש.<br>
                     • הסד"כ הנדרש גדול ממספר החיילים הזמינים.<br>
-                    • נסה להגדיל את <b>זמן הפתרון</b> בהגדרות המתקדמות.
+                    • נסה להגדיל את <b>זמן הפתרון</b> בהגדרות המתקדמות ולחץ שוב.
                     </div>
                     """, unsafe_allow_html=True)
     else:

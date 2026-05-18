@@ -1,360 +1,361 @@
+import io
 import streamlit as st
+import pandas as pd
+import plotly.express as px
+from ortools.sat.python import cp_model
 import traceback
 
-# חובה להיות הפקודה הראשונה:
+# חובה להיות הפקודה הראשונה באפליקציה
 st.set_page_config(page_title="מערכת שבצ''ק חכמה", page_icon="🪖", layout="wide")
 
 # ══════════════════════════════════════════════════════════════════
-# רשת ביטחון גלובלית - עוטפת את כל האפליקציה למניעת מסכים לבנים!
+# 1. CSS — RTL מלא ועיצוב הממשק
 # ══════════════════════════════════════════════════════════════════
-try:
-    import io
-    import pandas as pd
-    import plotly.express as px
-    from ortools.sat.python import cp_model
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap');
+html, body { direction: rtl; }
+.stApp, [data-testid="stAppViewContainer"], .main, .block-container,
+.stMarkdown, p, span, li, label, div,
+[data-testid="stText"], [data-testid="stMarkdownContainer"],
+[data-testid="stAlert"], [data-testid="stExpander"] summary,
+[data-testid="stFileUploader"] label, [data-testid="stFileUploader"] div,
+[data-testid="stSlider"] label, [data-testid="stSelectbox"] label {
+    font-family: 'Heebo', sans-serif !important;
+    direction: rtl !important;
+    text-align: right !important;
+}
+.stApp { background: #f2f5f2; }
+.block-container { padding: 2rem 2.5rem 3rem; max-width: 1400px; }
+.app-header { background: linear-gradient(135deg, #1a3d17 0%, #2d5a27 60%, #3d7a35 100%); border-radius: 16px; padding: 30px 35px; margin-bottom: 28px; box-shadow: 0 4px 20px rgba(45,90,39,0.25); text-align: right; }
+.app-header h1 { font-size: clamp(24px, 4vw, 42px); font-weight: 900; color: white; margin: 0 0 8px 0; letter-spacing: -0.5px; }
+.app-header p { font-size: 16px; color: rgba(255,255,255,0.88); margin: 0; }
+[data-testid="stTabs"] [data-baseweb="tab-list"] { flex-direction: row-reverse !important; justify-content: flex-start !important; gap: 6px; background: white; border-radius: 12px; padding: 5px; border: 1px solid #dde8dc; margin-bottom: 20px; }
+[data-testid="stTabs"] [data-baseweb="tab"] { border-radius: 8px; font-weight: 600; font-size: 14px; padding: 8px 20px; color: #5a7a57; direction: rtl; }
+[data-testid="stTabs"] [aria-selected="true"] { background: #2d5a27 !important; color: white !important; }
+.metric-row { display: flex; flex-direction: row-reverse; gap: 16px; margin: 22px 0; flex-wrap: wrap; }
+.metric-card { flex: 1; min-width: 160px; background: white; border-radius: 14px; padding: 22px; border: 1px solid #dde8dc; box-shadow: 0 2px 8px rgba(45,90,39,0.07); text-align: right; direction: rtl; }
+.mc-label { font-size: 11px; color: #7a9a77; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
+.mc-value { font-size: 34px; font-weight: 900; color: #1a3d17; line-height: 1; }
+.mc-sub   { font-size: 12px; color: #a0b89d; margin-top: 4px; }
+div.stButton > button:first-child { background: linear-gradient(135deg, #2d5a27, #3d7a35) !important; color: white !important; font-weight: 700 !important; font-size: 17px !important; border-radius: 10px !important; border: none !important; height: 3.4em; width: 100%; box-shadow: 0 4px 14px rgba(45,90,39,0.3); transition: all 0.18s !important; }
+div.stButton > button:first-child:hover { transform: translateY(-1px) !important; box-shadow: 0 6px 20px rgba(45,90,39,0.4) !important; }
+[data-testid="stDownloadButton"] > button { background: #b84d00 !important; color: white !important; font-weight: 600 !important; border-radius: 10px !important; border: none !important; }
+[data-testid="stFileUploader"] { background: white; border-radius: 12px; padding: 14px 16px; border: 2px dashed #c0d8bc; direction: rtl; text-align: right; }
+[data-testid="stTable"] table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: white; direction: rtl; }
+[data-testid="stTable"] th { background: #2d5a27 !important; color: white !important; padding: 10px 13px !important; font-weight: 600 !important; font-size: 12px !important; text-align: right !important; direction: rtl !important; }
+[data-testid="stTable"] td { padding: 9px 13px !important; border-bottom: 1px solid #f0f0f0 !important; text-align: right !important; direction: rtl !important; }
+.guide-table { width: 100%; border-collapse: separate; border-spacing: 0; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.07); margin: 16px 0; font-size: 14px; direction: rtl; }
+.guide-table th { background: #2d5a27; color: white; padding: 13px 16px; text-align: right; font-weight: 700; font-size: 13px; }
+.guide-table td { padding: 12px 16px; border-bottom: 1px solid #eef3ed; background: white; line-height: 1.7; vertical-align: top; text-align: right; }
+.info-box { background: #edf5ec; border-right: 5px solid #2d5a27; padding: 14px 18px; margin: 14px 0; font-size: 14px; color: #1a3d17; line-height: 1.8; direction: rtl; text-align: right; border-radius: 0 10px 10px 0; }
+.warn-box { background: #fff8e6; border-right: 5px solid #e67e22; padding: 14px 18px; margin: 14px 0; font-size: 14px; color: #7a4500; line-height: 1.8; direction: rtl; text-align: right; border-radius: 0 10px 10px 0; }
+.error-box { background: #fdecea; border-right: 5px solid #c0392b; padding: 14px 18px; margin: 14px 0; font-size: 14px; color: #7a0010; line-height: 1.8; direction: rtl; text-align: right; border-radius: 0 10px 10px 0; }
+[data-testid="stExpander"] summary { direction: rtl; text-align: right; font-family: 'Heebo', sans-serif; font-weight: 600; }
+</style>
+""", unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════════════════════════════
-    # CSS — RTL מלא
-    # ══════════════════════════════════════════════════════════════════
-    st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap');
-    html, body { direction: rtl; }
-    .stApp, [data-testid="stAppViewContainer"], .main, .block-container,
-    .stMarkdown, p, span, li, label, div,
-    [data-testid="stText"], [data-testid="stMarkdownContainer"],
-    [data-testid="stAlert"], [data-testid="stExpander"] summary,
-    [data-testid="stFileUploader"] label, [data-testid="stFileUploader"] div,
-    [data-testid="stSlider"] label, [data-testid="stSelectbox"] label {
-        font-family: 'Heebo', sans-serif !important;
-        direction: rtl !important;
-        text-align: right !important;
-    }
-    .stApp { background: #f2f5f2; }
-    .block-container { padding: 2rem 2.5rem 3rem; max-width: 1400px; }
-    .app-header { background: linear-gradient(135deg, #1a3d17 0%, #2d5a27 60%, #3d7a35 100%); border-radius: 16px; padding: 30px 35px; margin-bottom: 28px; box-shadow: 0 4px 20px rgba(45,90,39,0.25); text-align: right; }
-    .app-header h1 { font-size: clamp(24px, 4vw, 42px); font-weight: 900; color: white; margin: 0 0 8px 0; letter-spacing: -0.5px; }
-    .app-header p { font-size: 16px; color: rgba(255,255,255,0.88); margin: 0; }
-    [data-testid="stTabs"] [data-baseweb="tab-list"] { flex-direction: row-reverse !important; justify-content: flex-start !important; gap: 6px; background: white; border-radius: 12px; padding: 5px; border: 1px solid #dde8dc; margin-bottom: 20px; }
-    [data-testid="stTabs"] [data-baseweb="tab"] { border-radius: 8px; font-weight: 600; font-size: 14px; padding: 8px 20px; color: #5a7a57; direction: rtl; }
-    [data-testid="stTabs"] [aria-selected="true"] { background: #2d5a27 !important; color: white !important; }
-    .metric-row { display: flex; flex-direction: row-reverse; gap: 16px; margin: 22px 0; flex-wrap: wrap; }
-    .metric-card { flex: 1; min-width: 160px; background: white; border-radius: 14px; padding: 22px; border: 1px solid #dde8dc; box-shadow: 0 2px 8px rgba(45,90,39,0.07); text-align: right; direction: rtl; }
-    .mc-label { font-size: 11px; color: #7a9a77; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; }
-    .mc-value { font-size: 34px; font-weight: 900; color: #1a3d17; line-height: 1; }
-    .mc-sub   { font-size: 12px; color: #a0b89d; margin-top: 4px; }
-    div.stButton > button:first-child { background: linear-gradient(135deg, #2d5a27, #3d7a35) !important; color: white !important; font-weight: 700 !important; font-size: 17px !important; border-radius: 10px !important; border: none !important; height: 3.4em; width: 100%; box-shadow: 0 4px 14px rgba(45,90,39,0.3); transition: all 0.18s !important; }
-    div.stButton > button:first-child:hover { transform: translateY(-1px) !important; box-shadow: 0 6px 20px rgba(45,90,39,0.4) !important; }
-    [data-testid="stDownloadButton"] > button { background: #b84d00 !important; color: white !important; font-weight: 600 !important; border-radius: 10px !important; border: none !important; }
-    [data-testid="stFileUploader"] { background: white; border-radius: 12px; padding: 14px 16px; border: 2px dashed #c0d8bc; direction: rtl; text-align: right; }
-    [data-testid="stTable"] table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: white; direction: rtl; }
-    [data-testid="stTable"] th { background: #2d5a27 !important; color: white !important; padding: 10px 13px !important; font-weight: 600 !important; font-size: 12px !important; text-align: right !important; direction: rtl !important; }
-    [data-testid="stTable"] td { padding: 9px 13px !important; border-bottom: 1px solid #f0f0f0 !important; text-align: right !important; direction: rtl !important; }
-    .guide-table { width: 100%; border-collapse: separate; border-spacing: 0; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.07); margin: 16px 0; font-size: 14px; direction: rtl; }
-    .guide-table th { background: #2d5a27; color: white; padding: 13px 16px; text-align: right; font-weight: 700; font-size: 13px; }
-    .guide-table td { padding: 12px 16px; border-bottom: 1px solid #eef3ed; background: white; line-height: 1.7; vertical-align: top; text-align: right; }
-    .info-box { background: #edf5ec; border-right: 5px solid #2d5a27; padding: 14px 18px; margin: 14px 0; font-size: 14px; color: #1a3d17; line-height: 1.8; direction: rtl; text-align: right; border-radius: 0 10px 10px 0; }
-    .warn-box { background: #fff8e6; border-right: 5px solid #e67e22; padding: 14px 18px; margin: 14px 0; font-size: 14px; color: #7a4500; line-height: 1.8; direction: rtl; text-align: right; border-radius: 0 10px 10px 0; }
-    .error-box { background: #fdecea; border-right: 5px solid #c0392b; padding: 14px 18px; margin: 14px 0; font-size: 14px; color: #7a0010; line-height: 1.8; direction: rtl; text-align: right; border-radius: 0 10px 10px 0; }
-    [data-testid="stExpander"] summary { direction: rtl; text-align: right; font-family: 'Heebo', sans-serif; font-weight: 600; }
-    </style>
-    """, unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════════════════════════════
-    # מחלקות נתונים ומפרסרי שעות חכמים
-    # ══════════════════════════════════════════════════════════════════
-    def parse_time_ranges(val) -> list:
-        if pd.isna(val) or str(val).strip().lower() in ('all', '', 'nan'):
-            return list(range(24))
-        res = set()
-        for part in str(val).split(','):
-            part = part.strip()
-            if '-' in part:
-                parts = part.split('-')
-                if len(parts) == 2:
-                    s_str = parts[0].split(':')[0].strip()
-                    e_str = parts[1].split(':')[0].strip()
-                    if s_str.isdigit() and e_str.isdigit():
-                        s, e = int(s_str), int(e_str)
-                        if s <= e:
-                            for h in range(s, e + 1):
-                                res.add(h % 24)
-                        else:
-                            for h in range(s, 24):
-                                res.add(h % 24)
-                            for h in range(0, e + 1):
-                                res.add(h % 24)
-            elif part.replace('.0', '').isdigit():
-                res.add(int(float(part)) % 24)
-            elif ':' in part:
-                h_str = part.split(':')[0].strip()
-                if h_str.isdigit():
-                    res.add(int(h_str) % 24)
-        return sorted(list(res))
+# ══════════════════════════════════════════════════════════════════
+# 2. פונקציות עזר ומחלקות נתונים
+# ══════════════════════════════════════════════════════════════════
+def parse_time_ranges(val) -> list:
+    if pd.isna(val) or str(val).strip().lower() in ('all', '', 'nan'):
+        return list(range(24))
+    res = set()
+    for part in str(val).split(','):
+        part = part.strip()
+        if '-' in part:
+            parts = part.split('-')
+            if len(parts) == 2:
+                s_str = parts[0].split(':')[0].strip()
+                e_str = parts[1].split(':')[0].strip()
+                if s_str.isdigit() and e_str.isdigit():
+                    s, e = int(s_str), int(e_str)
+                    if s <= e:
+                        for h in range(s, e + 1):
+                            res.add(h % 24)
+                    else:
+                        for h in range(s, 24):
+                            res.add(h % 24)
+                        for h in range(0, e + 1):
+                            res.add(h % 24)
+        elif part.replace('.0', '').isdigit():
+            res.add(int(float(part)) % 24)
+        elif ':' in part:
+            h_str = part.split(':')[0].strip()
+            if h_str.isdigit():
+                res.add(int(h_str) % 24)
+    return sorted(list(res))
 
-    class Soldier:
-        def __init__(self, s_id, name, restr="", roles="", unavail=""):
-            self.soldier_id = str(s_id).replace('.0', '').strip()
-            self.name       = str(name).strip()
-            self.restricted_tasks = (
-                [int(float(t)) for t in str(restr).split(',') if str(t).strip().replace('.0', '').isdigit()]
-                if pd.notna(restr) and str(restr).strip() not in ("", "nan") else []
-            )
-            self.roles = (
-                [r.strip() for r in str(roles).split(',') if r.strip()]
-                if pd.notna(roles) and str(roles).strip() not in ("", "nan") else []
-            )
-            self.unavail_hours = parse_time_ranges(unavail)
 
-    class Task:
-        def __init__(self, t_id, name, req_p, shift_dur, rest_dur, overlap, hours, req_roles, intensity, blocked_roles=""):
-            self.task_id            = int(float(t_id))
-            self.name               = str(name).strip()
-            self.required_personnel = int(req_p)
-            self.shift_duration     = int(shift_dur) if pd.notna(shift_dur) else 1
-            self.rest_duration      = int(rest_dur)  if pd.notna(rest_dur)  else 0
-            self.allow_overlap      = str(overlap).strip().lower() == 'true'
-            self.active_hours       = parse_time_ranges(hours)
-            self.intensity          = int(intensity) if pd.notna(intensity) else 1
-            self.blocked_roles      = (
-                [r.strip() for r in str(blocked_roles).split(',') if r.strip()]
-                if pd.notna(blocked_roles) and str(blocked_roles).strip() not in ("", "nan") else []
-            )
-            parsed_roles = (
-                [r.strip() for r in str(req_roles).split(',')]
-                if pd.notna(req_roles) and str(req_roles).strip() not in ("", "nan") else []
-            )
-            self.slots = parsed_roles.copy()
-            while len(self.slots) < self.required_personnel:
-                self.slots.append(None)
+class Soldier:
+    def __init__(self, s_id, name, restr="", roles="", unavail=""):
+        self.soldier_id = str(s_id).replace('.0', '').strip()
+        self.name       = str(name).strip()
+        self.restricted_tasks = (
+            [int(float(t)) for t in str(restr).split(',') if str(t).strip().replace('.0', '').isdigit()]
+            if pd.notna(restr) and str(restr).strip() not in ("", "nan") else []
+        )
+        self.roles = (
+            [r.strip() for r in str(roles).split(',') if r.strip()]
+            if pd.notna(roles) and str(roles).strip() not in ("", "nan") else []
+        )
+        self.unavail_hours = parse_time_ranges(unavail)
 
-    def to_excel_styled(df: pd.DataFrame, sheet_name: str = 'שבצ"ק', include_index: bool = True) -> bytes:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=include_index, sheet_name=sheet_name)
-            wb, ws = writer.book, writer.sheets[sheet_name]
-            hfmt = wb.add_format({'bold': True, 'fg_color': '#2d5a27', 'font_color': 'white', 'border': 1, 'align': 'right', 'valign': 'vcenter'})
-            efmt = wb.add_format({'fg_color': '#f0f8ef', 'align': 'right'})
-            bfmt = wb.add_format({'align': 'right'})
-            for col_num, col_val in enumerate(df.columns.values):
-                col_idx = col_num + (1 if include_index else 0)
-                ws.write(0, col_idx, col_val, hfmt)
-                col_len = max(df[col_val].astype(str).map(len).max(), len(col_val)) + 5
-                ws.set_column(col_idx, col_idx, min(col_len, 40))
-            for row_num in range(1, len(df) + 1):
-                ws.set_row(row_num, None, efmt if row_num % 2 == 0 else bfmt)
-            if include_index:
-                ws.set_column(0, 0, 5)
-        return output.getvalue()
 
-    def build_greedy_hints(soldiers, tasks, num_hours=24):
-        hints = {}
-        busy_until = {s.soldier_id: -1 for s in soldiers}
-        for s in soldiers:
-            for t in tasks:
-                for slot_idx in range(len(t.slots)):
-                    for h in range(num_hours):
-                        hints[(s.soldier_id, t.task_id, slot_idx, h)] = 0
-        soldier_work_hours = {s.soldier_id: 0 for s in soldiers}
-        for t in tasks:
-            for slot_idx, req_role in enumerate(t.slots):
-                h_list = sorted(t.active_hours)
-                for h in h_list:
-                    best = None
-                    best_load = 999999
-                    for s in soldiers:
-                        if h in s.unavail_hours or t.task_id in s.restricted_tasks: continue
-                        if any(role in t.blocked_roles for role in s.roles): continue
-                        if req_role is not None and req_role not in s.roles: continue
-                        if busy_until[s.soldier_id] >= h and not t.allow_overlap: continue
-                        if soldier_work_hours[s.soldier_id] < best_load:
-                            best_load = soldier_work_hours[s.soldier_id]
-                            best = s
-                    if best is not None:
-                        hints[(best.soldier_id, t.task_id, slot_idx, h)] = 1
-                        soldier_work_hours[best.soldier_id] += 1
-                        if not t.allow_overlap:
-                            busy_until[best.soldier_id] = max(busy_until[best.soldier_id], h + t.shift_duration + t.rest_duration - 1)
-        return hints
+class Task:
+    def __init__(self, t_id, name, req_p, shift_dur, rest_dur, overlap, hours, req_roles, intensity, blocked_roles=""):
+        self.task_id            = int(float(t_id))
+        self.name               = str(name).strip()
+        self.required_personnel = int(req_p)
+        self.shift_duration     = int(shift_dur) if pd.notna(shift_dur) else 1
+        self.rest_duration      = int(rest_dur)  if pd.notna(rest_dur)  else 0
+        self.allow_overlap      = str(overlap).strip().lower() == 'true'
+        self.active_hours       = parse_time_ranges(hours)
+        self.intensity          = int(intensity) if pd.notna(intensity) else 1
+        self.blocked_roles      = (
+            [r.strip() for r in str(blocked_roles).split(',') if r.strip()]
+            if pd.notna(blocked_roles) and str(blocked_roles).strip() not in ("", "nan") else []
+        )
+        parsed_roles = (
+            [r.strip() for r in str(req_roles).split(',')]
+            if pd.notna(req_roles) and str(req_roles).strip() not in ("", "nan") else []
+        )
+        self.slots = parsed_roles.copy()
+        while len(self.slots) < self.required_personnel:
+            self.slots.append(None)
 
-    def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limit: float = 120.0, soft_rest: bool = True):
-        model = cp_model.CpModel()
-        x, start = {}, {}
-        SLEEP_WINDOW = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8]
-        zero_var = model.NewIntVar(0, 0, 'zero_const')
 
-        for s in soldiers:
-            for t in tasks:
-                for slot_idx in range(len(t.slots)):
-                    for h in range(num_hours):
-                        x[s.soldier_id, t.task_id, slot_idx, h] = model.NewBoolVar(f"x_{s.soldier_id}_{t.task_id}_{slot_idx}_{h}")
-                        start[s.soldier_id, t.task_id, slot_idx, h] = model.NewBoolVar(f"st_{s.soldier_id}_{t.task_id}_{slot_idx}_{h}")
+def to_excel_styled(df: pd.DataFrame, sheet_name: str = 'שבצ"ק', include_index: bool = True) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=include_index, sheet_name=sheet_name)
+        wb, ws = writer.book, writer.sheets[sheet_name]
+        hfmt = wb.add_format({'bold': True, 'fg_color': '#2d5a27', 'font_color': 'white', 'border': 1, 'align': 'right', 'valign': 'vcenter'})
+        efmt = wb.add_format({'fg_color': '#f0f8ef', 'align': 'right'})
+        bfmt = wb.add_format({'align': 'right'})
+        for col_num, col_val in enumerate(df.columns.values):
+            col_idx = col_num + (1 if include_index else 0)
+            ws.write(0, col_idx, col_val, hfmt)
+            col_len = max(df[col_val].astype(str).map(len).max(), len(col_val)) + 5
+            ws.set_column(col_idx, col_idx, min(col_len, 40))
+        for row_num in range(1, len(df) + 1):
+            ws.set_row(row_num, None, efmt if row_num % 2 == 0 else bfmt)
+        if include_index:
+            ws.set_column(0, 0, 5)
+    return output.getvalue()
 
-        hints = build_greedy_hints(soldiers, tasks, num_hours)
-        for key, val in hints.items():
-            if key in x:
-                model.AddHint(x[key], val)
 
-        rest_violation_vars = []
-
-        for s in soldiers:
-            for h in s.unavail_hours:
-                if h < num_hours:
-                    model.Add(sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots))) == 0)
-
-            for t in tasks:
-                if any(role in t.blocked_roles for role in s.roles) or (t.task_id in s.restricted_tasks):
-                    for slot_idx in range(len(t.slots)):
-                        for h in range(num_hours):
-                            model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
-                    continue
-
-                for slot_idx, required_role in enumerate(t.slots):
-                    if required_role is not None and required_role not in s.roles:
-                        for h in range(num_hours):
-                            model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
-                        continue
-
-                    for h in range(num_hours):
-                        relevant_starts = [start[s.soldier_id, t.task_id, slot_idx, (h - i) % num_hours] for i in range(t.shift_duration)]
-                        model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == sum(relevant_starts))
-
-                        if t.rest_duration > 0 and not t.allow_overlap:
-                            rest_window = t.shift_duration + t.rest_duration
-                            for rest_offset in range(t.shift_duration, min(rest_window, num_hours)):
-                                rest_h = (h + rest_offset) % num_hours
-                                for other_t in tasks:
-                                    if not other_t.allow_overlap:
-                                        for other_slot in range(len(other_t.slots)):
-                                            if soft_rest:
-                                                viol = model.NewBoolVar(f'rv_{s.soldier_id}_{t.task_id}_{slot_idx}_{h}_{rest_h}_{other_t.task_id}_{other_slot}')
-                                                model.Add(viol >= start[s.soldier_id, t.task_id, slot_idx, h] + x[s.soldier_id, other_t.task_id, other_slot, rest_h] - 1)
-                                                rest_violation_vars.append(viol)
-                                            else:
-                                                model.Add(x[s.soldier_id, other_t.task_id, other_slot, rest_h] == 0).OnlyEnforceIf(start[s.soldier_id, t.task_id, slot_idx, h])
-
+def build_greedy_hints(soldiers, tasks, num_hours=24):
+    hints = {}
+    busy_until = {s.soldier_id: -1 for s in soldiers}
+    for s in soldiers:
         for t in tasks:
             for slot_idx in range(len(t.slots)):
                 for h in range(num_hours):
-                    assigned = sum(x[s.soldier_id, t.task_id, slot_idx, h] for s in soldiers)
-                    if h in t.active_hours:
-                        model.Add(assigned == 1)
-                    else:
-                        model.Add(assigned == 0)
+                    hints[(s.soldier_id, t.task_id, slot_idx, h)] = 0
+    soldier_work_hours = {s.soldier_id: 0 for s in soldiers}
+    for t in tasks:
+        for slot_idx, req_role in enumerate(t.slots):
+            h_list = sorted(t.active_hours)
+            for h in h_list:
+                best = None
+                best_load = 999999
+                for s in soldiers:
+                    if h in s.unavail_hours or t.task_id in s.restricted_tasks: continue
+                    if any(role in t.blocked_roles for role in s.roles): continue
+                    if req_role is not None and req_role not in s.roles: continue
+                    if busy_until[s.soldier_id] >= h and not t.allow_overlap: continue
+                    if soldier_work_hours[s.soldier_id] < best_load:
+                        best_load = soldier_work_hours[s.soldier_id]
+                        best = s
+                if best is not None:
+                    hints[(best.soldier_id, t.task_id, slot_idx, h)] = 1
+                    soldier_work_hours[best.soldier_id] += 1
+                    if not t.allow_overlap:
+                        busy_until[best.soldier_id] = max(busy_until[best.soldier_id], h + t.shift_duration + t.rest_duration - 1)
+    return hints
 
-        for s in soldiers:
-            for h in range(num_hours):
-                blocking = [x[s.soldier_id, t.task_id, slot_idx, h] for t in tasks if not t.allow_overlap for slot_idx in range(len(t.slots))]
-                model.Add(sum(blocking) <= 1)
 
-        s_total_hours, s_intensity_scores, sleep_penalties = [], [], []
+def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limit: float = 120.0, soft_rest: bool = True):
+    model = cp_model.CpModel()
+    x, start = {}, {}
+    SLEEP_WINDOW = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8]
+    zero_var = model.NewIntVar(0, 0, 'zero_const')
 
-        for s in soldiers:
-            total_h = sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
-            s_total_hours.append(total_h)
+    for s in soldiers:
+        for t in tasks:
+            for slot_idx in range(len(t.slots)):
+                for h in range(num_hours):
+                    x[s.soldier_id, t.task_id, slot_idx, h] = model.NewBoolVar(f"x_{s.soldier_id}_{t.task_id}_{slot_idx}_{h}")
+                    start[s.soldier_id, t.task_id, slot_idx, h] = model.NewBoolVar(f"st_{s.soldier_id}_{t.task_id}_{slot_idx}_{h}")
 
-            intensity_score = sum(x[s.soldier_id, t.task_id, slot, h] * t.intensity for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
-            s_intensity_scores.append(intensity_score)
+    hints = build_greedy_hints(soldiers, tasks, num_hours)
+    for key, val in hints.items():
+        if key in x:
+            model.AddHint(x[key], val)
 
-            night_work = sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks if not t.allow_overlap for slot in range(len(t.slots)) for h in SLEEP_WINDOW)
-            night_work_var = model.NewIntVar(0, len(SLEEP_WINDOW), f'nw_{s.soldier_id}')
-            model.Add(night_work_var == night_work)
-            shifted = model.NewIntVar(-len(SLEEP_WINDOW), len(SLEEP_WINDOW), f'sh_{s.soldier_id}')
-            model.Add(shifted == night_work_var - 4)
-            penalty = model.NewIntVar(0, len(SLEEP_WINDOW), f'sp_{s.soldier_id}')
-            model.AddMaxEquality(penalty, [zero_var, shifted])
-            sleep_penalties.append(penalty)
+    rest_violation_vars = []
 
-        max_load = model.NewIntVar(0, 1000, 'max_load')
-        min_load = model.NewIntVar(0, 1000, 'min_load')
-        model.AddMaxEquality(max_load, s_total_hours)
-        model.AddMinEquality(min_load, s_total_hours)
-        load_diff = model.NewIntVar(0, 1000, 'load_diff')
-        model.Add(load_diff == max_load - min_load)
+    for s in soldiers:
+        for h in s.unavail_hours:
+            if h < num_hours:
+                model.Add(sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots))) == 0)
 
-        max_int = model.NewIntVar(0, 1000, 'max_int')
-        min_int = model.NewIntVar(0, 1000, 'min_int')
-        model.AddMaxEquality(max_int, s_intensity_scores)
-        model.AddMinEquality(min_int, s_intensity_scores)
-        int_diff = model.NewIntVar(0, 1000, 'int_diff')
-        model.Add(int_diff == max_int - min_int)
-
-        total_rest_violations = sum(rest_violation_vars) if rest_violation_vars else model.NewIntVar(0,0,'no_rv')
-        model.Minimize(500 * total_rest_violations + 100 * load_diff + 50  * int_diff + 200 * sum(sleep_penalties))
-
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = time_limit
-        solver.parameters.num_search_workers  = 1
-        solver.parameters.log_search_progress = False
-        status = solver.Solve(model)
-
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            return None, 0
-
-        hour_labels = [f"{h:02d}:00" for h in range(num_hours)]
-        rows = []
-        total_rest_viol_count = sum(solver.Value(v) for v in rest_violation_vars) if rest_violation_vars else 0
-
-        for s in soldiers:
-            if s.name == "nan" or not s.name:
+        for t in tasks:
+            if any(role in t.blocked_roles for role in s.roles) or (t.task_id in s.restricted_tasks):
+                for slot_idx in range(len(t.slots)):
+                    for h in range(num_hours):
+                        model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
                 continue
-            row = {"שם": s.name}
-            night_count = sum(solver.Value(x[s.soldier_id, t.task_id, slot, h]) for t in tasks if not t.allow_overlap for slot in range(len(t.slots)) for h in SLEEP_WINDOW)
+
+            for slot_idx, required_role in enumerate(t.slots):
+                if required_role is not None and required_role not in s.roles:
+                    for h in range(num_hours):
+                        model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
+                    continue
+
+                for h in range(num_hours):
+                    relevant_starts = [start[s.soldier_id, t.task_id, slot_idx, (h - i) % num_hours] for i in range(t.shift_duration)]
+                    model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == sum(relevant_starts))
+
+                    if t.rest_duration > 0 and not t.allow_overlap:
+                        rest_window = t.shift_duration + t.rest_duration
+                        for rest_offset in range(t.shift_duration, min(rest_window, num_hours)):
+                            rest_h = (h + rest_offset) % num_hours
+                            for other_t in tasks:
+                                if not other_t.allow_overlap:
+                                    for other_slot in range(len(other_t.slots)):
+                                        if soft_rest:
+                                            viol = model.NewBoolVar(f'rv_{s.soldier_id}_{t.task_id}_{slot_idx}_{h}_{rest_h}_{other_t.task_id}_{other_slot}')
+                                            model.Add(viol >= start[s.soldier_id, t.task_id, slot_idx, h] + x[s.soldier_id, other_t.task_id, other_slot, rest_h] - 1)
+                                            rest_violation_vars.append(viol)
+                                        else:
+                                            model.Add(x[s.soldier_id, other_t.task_id, other_slot, rest_h] == 0).OnlyEnforceIf(start[s.soldier_id, t.task_id, slot_idx, h])
+
+    for t in tasks:
+        for slot_idx in range(len(t.slots)):
             for h in range(num_hours):
-                active = [t.name for t in tasks for slot_idx in range(len(t.slots)) if solver.Value(x[s.soldier_id, t.task_id, slot_idx, h]) == 1]
-                row[hour_labels[h]] = " + ".join(active) if active else "—"
-            row["סך שעות"] = sum(1 for h in range(num_hours) if any(solver.Value(x[s.soldier_id, t.task_id, slot, h]) == 1 for t in tasks for slot in range(len(t.slots))))
-            row["מדד עצימות"] = sum(solver.Value(x[s.soldier_id, t.task_id, slot, h]) * t.intensity for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
-            row["שעות שינה (22-08)"] = len(SLEEP_WINDOW) - night_count
-            rows.append(row)
+                assigned = sum(x[s.soldier_id, t.task_id, slot_idx, h] for s in soldiers)
+                if h in t.active_hours:
+                    model.Add(assigned == 1)
+                else:
+                    model.Add(assigned == 0)
 
-        df = pd.DataFrame(rows)
-        df.index = range(1, len(df) + 1)
-        return df, total_rest_viol_count
+    for s in soldiers:
+        for h in range(num_hours):
+            blocking = [x[s.soldier_id, t.task_id, slot_idx, h] for t in tasks if not t.allow_overlap for slot_idx in range(len(t.slots))]
+            model.Add(sum(blocking) <= 1)
+
+    s_total_hours, s_intensity_scores, sleep_penalties = [], [], []
+
+    for s in soldiers:
+        total_h = sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
+        s_total_hours.append(total_h)
+
+        intensity_score = sum(x[s.soldier_id, t.task_id, slot, h] * t.intensity for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
+        s_intensity_scores.append(intensity_score)
+
+        night_work = sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks if not t.allow_overlap for slot in range(len(t.slots)) for h in SLEEP_WINDOW)
+        night_work_var = model.NewIntVar(0, len(SLEEP_WINDOW), f'nw_{s.soldier_id}')
+        model.Add(night_work_var == night_work)
+        shifted = model.NewIntVar(-len(SLEEP_WINDOW), len(SLEEP_WINDOW), f'sh_{s.soldier_id}')
+        model.Add(shifted == night_work_var - 4)
+        penalty = model.NewIntVar(0, len(SLEEP_WINDOW), f'sp_{s.soldier_id}')
+        model.AddMaxEquality(penalty, [zero_var, shifted])
+        sleep_penalties.append(penalty)
+
+    max_load = model.NewIntVar(0, 1000, 'max_load')
+    min_load = model.NewIntVar(0, 1000, 'min_load')
+    model.AddMaxEquality(max_load, s_total_hours)
+    model.AddMinEquality(min_load, s_total_hours)
+    load_diff = model.NewIntVar(0, 1000, 'load_diff')
+    model.Add(load_diff == max_load - min_load)
+
+    max_int = model.NewIntVar(0, 1000, 'max_int')
+    min_int = model.NewIntVar(0, 1000, 'min_int')
+    model.AddMaxEquality(max_int, s_intensity_scores)
+    model.AddMinEquality(min_int, s_intensity_scores)
+    int_diff = model.NewIntVar(0, 1000, 'int_diff')
+    model.Add(int_diff == max_int - min_int)
+
+    total_rest_violations = sum(rest_violation_vars) if rest_violation_vars else model.NewIntVar(0,0,'no_rv')
+    model.Minimize(500 * total_rest_violations + 100 * load_diff + 50  * int_diff + 200 * sum(sleep_penalties))
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit
+    solver.parameters.num_search_workers  = 1
+    solver.parameters.log_search_progress = False
+    status = solver.Solve(model)
+
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None, 0
+
+    hour_labels = [f"{h:02d}:00" for h in range(num_hours)]
+    rows = []
+    total_rest_viol_count = sum(solver.Value(v) for v in rest_violation_vars) if rest_violation_vars else 0
+
+    for s in soldiers:
+        if s.name == "nan" or not s.name: continue
+        row = {"שם": s.name}
+        night_count = sum(solver.Value(x[s.soldier_id, t.task_id, slot, h]) for t in tasks if not t.allow_overlap for slot in range(len(t.slots)) for h in SLEEP_WINDOW)
+        for h in range(num_hours):
+            active = [t.name for t in tasks for slot_idx in range(len(t.slots)) if solver.Value(x[s.soldier_id, t.task_id, slot_idx, h]) == 1]
+            row[hour_labels[h]] = " + ".join(active) if active else "—"
+        row["סך שעות"] = sum(1 for h in range(num_hours) if any(solver.Value(x[s.soldier_id, t.task_id, slot, h]) == 1 for t in tasks for slot in range(len(t.slots))))
+        row["מדד עצימות"] = sum(solver.Value(x[s.soldier_id, t.task_id, slot, h]) * t.intensity for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
+        row["שעות שינה (22-08)"] = len(SLEEP_WINDOW) - night_count
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    df.index = range(1, len(df) + 1)
+    return df, total_rest_viol_count
 
 
-    # ══════════════════════════════════════════════════════════════════
-    # ממשק ראשי
-    # ══════════════════════════════════════════════════════════════════
-    st.markdown("""
-    <div class="app-header">
-      <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v8.2)</h1>
-      <p>גרסת ברזל מוגנת קריסות · אילוצי מנוחה חכמים · תמיכה בשעוני אקסל צה"ליים</p>
-    </div>
-    """, unsafe_allow_html=True)
+# ══════════════════════════════════════════════════════════════════
+# 3. ממשק משתמש (טאבים ומבנה הרצה)
+# ══════════════════════════════════════════════════════════════════
+st.markdown("""
+<div class="app-header">
+  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v8.4)</h1>
+  <p>גרסת ברזל מיושרת · אילוצי מנוחה חכמים · תמיכה בשעוני אקסל צה"ליים</p>
+</div>
+""", unsafe_allow_html=True)
 
-    tab_run, tab_guide, tab_templates = st.tabs(["🚀  ביצוע שיבוץ", "📖  מדריך מפורט", "📥  תבניות אקסל"])
+tab_run, tab_guide, tab_templates = st.tabs(["🚀  ביצוע שיבוץ", "📖  מדריך מפורט", "📥  תבניות אקסל"])
 
-    with tab_templates:
-        st.markdown("### 📥 הורדת תבניות עבודה")
-        s_ex = pd.DataFrame({'מספר אישי': [1001, 1002], 'שם מלא': ['ישראל ישראלי', 'יוסי כהן'], 'פטורים': ['', '101'], 'הסמכות': ['נהג', 'קצין'], 'שעות חסימה': ['', '10-14']})
-        t_ex = pd.DataFrame({'מס"ד משימה': [101, 102], 'שם המשימה': ['סיור', 'שמירה'], 'סד"כ נדרש למשימה': [1, 2], 'משך משמרת': [4, 4], 'שעות מנוחה בין משימות': [8, 4], 'אישור חפיפה בין משימות': [False, False], 'שעות פעילות': ['all', '05:30-07:30'], 'הסמכה נדרשת': ['', ''], 'דירוג עצימות משימה (1-3)': [3, 1], 'תפקידים חסומים': ['', '']})
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            st.dataframe(s_ex, hide_index=True)
-            st.download_button("⬇️ הורד תבנית חיילים", data=to_excel_styled(s_ex, "Soldiers", False), file_name="Soldiers_v8.2.xlsx")
-        with c2:
-            st.dataframe(t_ex, hide_index=True)
-            st.download_button("⬇️ הורד תבנית משימות", data=to_excel_styled(t_ex, "Tasks", False), file_name="Tasks_v8.2.xlsx")
+with tab_templates:
+    st.markdown("### 📥 הורדת תבניות עבודה")
+    s_ex = pd.DataFrame({'מספר אישי': [1001, 1002], 'שם מלא': ['ישראל ישראלי', 'יוסי כהן'], 'פטורים': ['', '101'], 'הסמכות': ['נהג', 'קצין'], 'שעות חסימה': ['', '10-14']})
+    t_ex = pd.DataFrame({'מס"ד משימה': [101, 102], 'שם המשימה': ['סיור', 'שמירה'], 'סד"כ נדרש למשימה': [1, 2], 'משך משמרת': [4, 4], 'שעות מנוחה בין משימות': [8, 4], 'אישור חפיפה בין משימות': [False, False], 'שעות פעילות': ['all', '05:30-07:30'], 'הסמכה נדרשת': ['', ''], 'דירוג עצימות משימה (1-3)': [3, 1], 'תפקידים חסומים': ['', '']})
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.dataframe(s_ex, hide_index=True)
+        st.download_button("⬇️ הורד תבנית חיילים", data=to_excel_styled(s_ex, "Soldiers", False), file_name="Soldiers_v8.4.xlsx")
+    with c2:
+        st.dataframe(t_ex, hide_index=True)
+        st.download_button("⬇️ הורד תבנית משימות", data=to_excel_styled(t_ex, "Tasks", False), file_name="Tasks_v8.4.xlsx")
 
-    with tab_guide:
-        st.markdown("### 📖 מדריך v8.2 המעודכן")
-        st.markdown("המערכת תומכת כעת בשורות ריקות באקסל, בשמות עמודות גמישים ובשעות עם נקודתיים (למשל: `08:00-12:00`).")
+with tab_guide:
+    st.markdown("### 📖 מדריך v8.4 המעודכן")
+    st.markdown("המערכת תומכת כעת בשורות ריקות באקסל, בשמות עמודות גמישים ובשעות פעילות בפורמט צה\"לי (למשל: `05:30-07:30`).")
 
-    with tab_run:
-        col_u1, col_u2 = st.columns(2)
-        with col_u1:
-            sf = st.file_uploader("📂 קובץ חיילים (xlsx)", type="xlsx", key="sf")
-        with col_u2:
-            tf = st.file_uploader("📂 קובץ משימות (xlsx)", type="xlsx", key="tf")
+with tab_run:
+    col_u1, col_u2 = st.columns(2)
+    with col_u1:
+        sf = st.file_uploader("📂 קובץ חיילים (xlsx)", type="xlsx", key="sf")
+    with col_u2:
+        tf = st.file_uploader("📂 קובץ משימות (xlsx)", type="xlsx", key="tf")
 
-        with st.expander("⚙️ הגדרות מתקדמות"):
-            time_limit = st.slider("זמן מקסימלי לפתרון (שניות)", 30, 300, 120, 15)
-            soft_rest  = st.toggle("אילוצי מנוחה רכים (מומלץ למניעת כשלונות)", value=True)
+    with st.expander("⚙️ הגדרות מתקדמות"):
+        time_limit = st.slider("זמן מקסימלי לפתרון (שניות)", 30, 300, 120, 15)
+        soft_rest  = st.toggle("אילוצי מנוחה רכים (מומלץ למניעת כשלונות)", value=True)
 
-        if sf and tf:
-            if st.button('⚙️ צור שבצ"ק חכם (v8.2)'):
+    if sf and tf:
+        if st.button('⚙️ צור שבצ"ק חכם (v8.4)', key="run_btn"):
+            try:
                 with st.spinner("מנקה נתוני אקסל ובונה מטריצות..."):
                     s_df = pd.read_excel(sf)
                     t_df = pd.read_excel(tf)
@@ -377,7 +378,7 @@ try:
                         for _, r in t_df_clean.iterrows()
                     ]
 
-                with st.spinner("מריץ אופטימיזציה מבוזרת (8 ליבות במקביל)..."):
+                with st.spinner("מריץ אופטימיזציה בענן..."):
                     final_df, rest_viols = solve_scheduling(soldiers, tasks, time_limit=time_limit, soft_rest=soft_rest)
 
                 if final_df is not None:
@@ -402,14 +403,10 @@ try:
 
                     st.subheader("📅 לוח השיבוץ הסופי")
                     st.table(final_df)
-                    st.download_button("📥 הורד לוח שיבוץ (Excel)", data=to_excel_styled(final_df), file_name="Final_Shavtzak_v8.2.xlsx")
+                    st.download_button("📥 הורד לוח שיבוץ (Excel)", data=to_excel_styled(final_df), file_name="Final_Shavtzak_v8.4.xlsx")
                 else:
                     st.markdown('<div class="error-box">❌ לא נמצא פתרון. נסו להגדיל את זמן הפתרון בהגדרות המתקדמות.</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="info-box">👆 העלו קובץ חיילים וקובץ משימות כדי להתחיל.</div>', unsafe_allow_html=True)
-
-except Exception as e:
-    # כאן מתרחש הקסם! כל קריסה תיתפס ותוצג למשתמש על המסך במקום "מסך לבן"
-    st.error("🚨 תקלה טכנית קרתה מאחורי הקלעים!")
-    st.markdown("<b>במקום לקרוס, המערכת תפסה את השגיאה. אנא העתק את הטקסט למטה ושלח אליי כדי שאתקן מיד:</b>", unsafe_allow_html=True)
-    st.code(traceback.format_exc())
+            
+            except Exception as inner_error:
+                st.error("🚨 תקלה קרתה במהלך עיבוד הנתונים!")
+                st.code(traceback.format_exc())

@@ -261,20 +261,6 @@ def to_excel_styled(df: pd.DataFrame, sheet_name: str = 'שבצ"ק',
 
 # ══════════════════════════════════════════════════════════════════
 # 5. מנוע CP-SAT (v6.4 - High Speed Production)
-#
-# אילוצים (קשיחים):
-#   א. חסימת שעות לחייל (unavail_hours)
-#   ב. פטורים + תפקידים חסומים — חסימה ברמת חייל×משימה
-#   ג. התאמת slot לתפקיד — slot מסוים ≡ תפקיד מסוים
-#   ד. נעילת משמרת מעגלית — x[h] = sum(start[h-i] for i in range(shift))
-#   ה. מנוחה חובה — OnlyEnforceIf(start[h]): חסום כל עמדה חוסמת בחלון מנוחה
-#   ו. כיסוי עמדות — בדיוק 1 חייל לכל slot×שעה פעילה (מטרת-על)
-#   ז. חד-ערכיות — חייל בעמדה חוסמת אחת בכל שעה
-#
-# פונקציית מטרה (רכה):
-#   min 100×(max_load - min_load)   ← הוגנות שעות
-#      + 50×(max_int - min_int)     ← הוגנות עצימות
-#      + 200×Σ sleep_penalty        ← שמירת שינה
 # ══════════════════════════════════════════════════════════════════
 def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24):
     model = cp_model.CpModel()
@@ -282,6 +268,7 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24):
     # חלון שינה: 22:00–08:59 = 11 שעות
     SLEEP_WINDOW = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8]
     zero_var = model.NewIntVar(0, 0, 'zero_const')
+    rest_penalties = []
 
     # ── יצירת משתנים ──
     for s in soldiers:
@@ -331,8 +318,7 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24):
                     ]
                     model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == sum(relevant_starts))
 
-                    # ה. מנוחה חובה — OnlyEnforceIf(start[h])
-                    # רק ממשימות חוסמות, רק לשעות מנוחה אחרי סיום המשמרת
+                    # ה. מנוחה חובה — כאילוץ רך 
                     if t.rest_duration > 0 and not t.allow_overlap:
                         rest_window = t.shift_duration + t.rest_duration
                         for rest_offset in range(1, min(rest_window, num_hours)):
@@ -340,9 +326,12 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24):
                             for other_t in tasks:
                                 if not other_t.allow_overlap:
                                     for other_slot in range(len(other_t.slots)):
-                                        model.Add(
-                                            x[s.soldier_id, other_t.task_id, other_slot, rest_h] == 0
-                                        ).OnlyEnforceIf(start[s.soldier_id, t.task_id, slot_idx, h])
+                                        # יצירת משתנה הפרה למנוחה
+                                        violation = model.NewBoolVar(f'rest_viol_{s.soldier_id}_{t.task_id}_{h}_{other_t.task_id}_{other_slot}_{rest_h}')
+                                        model.Add(violation >= start[s.soldier_id, t.task_id, slot_idx, h] + 
+                                                  x[s.soldier_id, other_t.task_id, other_slot, rest_h] - 1)
+                                        rest_penalties.append(violation)
+                                        
 
     # ו. כיסוי עמדות — מטרת-על
     for t in tasks:
@@ -409,7 +398,7 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24):
     int_diff = model.NewIntVar(0, 1000, 'int_diff')
     model.Add(int_diff == max_int - min_int)
 
-    model.Minimize(100 * load_diff + 50 * int_diff + 200 * sum(sleep_penalties))
+    model.Minimize(100 * load_diff + 50 * int_diff + 200 * sum(sleep_penalties) + 1000 * sum(rest_penalties))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = 45.0
@@ -419,6 +408,8 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24):
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return None
+        
+    total_rest_violations = sum(solver.Value(v) for v in rest_penalties) if rest_penalties else 0
 
     # ── בניית DataFrame תוצאות ──
     hour_labels = [f"{h:02d}:00" for h in range(num_hours)]
@@ -451,7 +442,7 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24):
 
     df = pd.DataFrame(rows)
     df.index = range(1, len(df) + 1)
-    return df
+    return df, total_rest_violations
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -489,7 +480,7 @@ with tab_templates:
         'שעות חסימה': ['', '10-14', ''],
     })
     t_ex = pd.DataFrame({
-        'מס"ד משימה':            [101, 102, 103],
+        'מס"ד משימה':             [101, 102, 103],
         'שם המשימה':             ['סיור רכוב', 'שמירת ש.ג.', 'כוננות קבועה'],
         'סד"כ נדרש למשימה':     [4, 2, 8],
         'משך משמרת':             [4, 4, 24],
@@ -631,13 +622,17 @@ with tab_run:
                 )
             else:
                 with st.spinner("מריץ אופטימיזציה מקבילית (עד 45 שניות)..."):
-                    final_df = solve_scheduling(soldiers, tasks)
+                    result = solve_scheduling(soldiers, tasks)
 
-                if final_df is not None:
+                if result is not None:
+                    final_df, total_rest_viol = result
                     gap_h = int(final_df["סך שעות"].max() - final_df["סך שעות"].min())
                     avg_h = final_df["סך שעות"].mean()
                     avg_sleep = final_df["שעות שינה (22-08)"].mean()
                     badge = "✅ מצוין" if gap_h <= 2 else ("⚠️ סביר" if gap_h <= 5 else "❗ גבוה")
+                    
+                    if total_rest_viol > 0:
+                        st.markdown(f'<div class="warn-box">⚠️ <b>שימו לב:</b> המערכת נאלצה לבצע {total_rest_viol} חריגות ממנוחת חובה כדי לאייש את כל העמדות! בדקו את הלו"ז בזהירות.</div>', unsafe_allow_html=True)
 
                     # ── כרטיסי מדד ──
                     st.markdown(f"""
@@ -710,6 +705,8 @@ with tab_run:
 **פער הוגנות:** {gap_h} שעות — {'חלוקה אחידה.' if gap_h <= 2 else 'מומלץ להוסיף חיילים עם תפקידים זהים לאיזון.' if gap_h > 4 else 'חלוקה סבירה.'}
 
 **שינה:** ממוצע {avg_sleep:.1f} שעות. האלגוריתם מעניש ×200 כל שעת לילה מעל 4 כדי להגן על חלון השינה.
+
+**מנוחת חובה:** {total_rest_viol} חריגות התבצעו. המערכת מעדיפה לקצר מנוחה מאשר להשאיר עמדה ריקה.
                         """)
                 else:
                     st.markdown("""

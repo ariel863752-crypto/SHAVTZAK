@@ -284,7 +284,7 @@ try:
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit
-        solver.parameters.num_search_workers  = 8
+        solver.parameters.num_search_workers  = 2
         solver.parameters.log_search_progress = False
         status = solver.Solve(model)
 

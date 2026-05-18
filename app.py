@@ -311,7 +311,7 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
-    solver.parameters.num_search_workers  = 2
+    solver.parameters.num_search_workers  = 4
     solver.parameters.log_search_progress = False
     
     status = solver.Solve(model)

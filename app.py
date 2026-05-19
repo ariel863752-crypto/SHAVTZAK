@@ -119,7 +119,6 @@ def build_greedy_hints(all_soldiers, tasks, num_hours=24):
     hints = {}
     busy_until = {s.soldier_id: -1 for s in all_soldiers}
     
-    # Initialize all to 0 explicitly
     for s in all_soldiers:
         for t in tasks:
             for slot_idx in range(len(t.slots)):
@@ -135,7 +134,7 @@ def build_greedy_hints(all_soldiers, tasks, num_hours=24):
                 best = None
                 best_load = 999999
                 for s in all_soldiers:
-                    if s.soldier_id == "DUMMY_999": continue # לא משתמשים בדמי לבניית הרמזים
+                    if s.soldier_id == "DUMMY_999": continue
                     if h in s.unavail_hours or t.task_id in s.restricted_tasks: continue
                     if any(role in t.blocked_roles for role in s.roles): continue
                     if req_role is not None and req_role not in s.roles: continue
@@ -153,7 +152,7 @@ def build_greedy_hints(all_soldiers, tasks, num_hours=24):
     return hints
 
 # ══════════════════════════════════════════════════════════════════
-# 3. מנוע CP-SAT האופטימלי (v10.3)
+# 3. מנוע CP-SAT המשופר והחסין (v10.4)
 # ══════════════════════════════════════════════════════════════════
 def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limit: float = 120.0, soft_rest: bool = True):
     model = cp_model.CpModel()
@@ -168,7 +167,7 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
     dummy = Soldier(s_id="DUMMY_999", name="⚠️ חייל חסר", roles=",".join(all_roles))
     all_soldiers = soldiers + [dummy]
 
-    # הגדרת משתני איוש בסיסיים
+    # הגדרת משתני איוש
     for s in all_soldiers:
         for t in tasks:
             for slot_idx in range(len(t.slots)):
@@ -181,7 +180,7 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
         if key in x:
             model.AddHint(x[key], val)
 
-    # יצירת משתני עזר רקורסיביים לזיהוי התחלה וסיום
+    # משתני עזר לזיהוי התחלה וסיום
     for s in all_soldiers:
         for h in range(num_hours):
             start_var[s.soldier_id, h] = model.NewBoolVar(f"start_{s.soldier_id}_{h}")
@@ -194,12 +193,14 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
             model.Add(start_var[s.soldier_id, h] >= current_work - prev_work)
             model.Add(end_var[s.soldier_id, h] >= prev_work - current_work)
 
+    # חסימות זמן לחיילים אמיתיים בלבד
     for s in all_soldiers:
         if s.soldier_id != dummy.soldier_id:
             for h in s.unavail_hours:
                 if h < num_hours:
                     model.Add(sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots))) == 0)
 
+    # פטורים לחיילים אמיתיים בלבד
     for s in all_soldiers:
         for t in tasks:
             if s.soldier_id != dummy.soldier_id:
@@ -214,6 +215,7 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
                     for h in range(num_hours):
                         model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
 
+    # אילוץ כיסוי עמדות
     for t in tasks:
         for slot_idx in range(len(t.slots)):
             for h in range(num_hours):
@@ -223,20 +225,27 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
                 else:
                     model.Add(assigned == 0)
 
+    # מיזעור חפיפות לחיילים אמיתיים בלבד (חייל רפאים יכול להשתכפל חופשי!)
     for s in all_soldiers:
+        if s.soldier_id == dummy.soldier_id: continue # התיקון הקריטי למניעת Infeasible
         for h in range(num_hours):
             blocking = [x[s.soldier_id, t.task_id, slot_idx, h] for t in tasks if not t.allow_overlap for slot_idx in range(len(t.slots))]
             model.Add(sum(blocking) <= 1)
 
+    # אילוץ אורך משמרת לחיילים אמיתיים בלבד
     for s in all_soldiers:
+        if s.soldier_id == dummy.soldier_id: continue # חייל רפאים לא כבול למשמרות רציפות
         for t in tasks:
             for slot_idx in range(len(t.slots)):
                 if t.shift_duration > 1:
                     for h in range(num_hours):
-                        window = [x[s.soldier_id, t.task_id, slot_idx, (h+i)%num_hours] for i in range(t.shift_duration)]
-                        model.Add(sum(window) >= t.shift_duration * x[s.soldier_id, t.task_id, slot_idx, h]).OnlyEnforceIf(start_var[s.soldier_id, h])
+                        # מוודאים שאורך המשמרת לא חורג משעות הפעילות של המשימה עצמה
+                        valid_hours_in_window = sum(1 for i in range(t.shift_duration) if ((h+i)%num_hours) in t.active_hours)
+                        if valid_hours_in_window == t.shift_duration:
+                            window = [x[s.soldier_id, t.task_id, slot_idx, (h+i)%num_hours] for i in range(t.shift_duration)]
+                            model.Add(sum(window) >= t.shift_duration * x[s.soldier_id, t.task_id, slot_idx, h]).OnlyEnforceIf(start_var[s.soldier_id, h])
 
-    # אילוץ מנוחה חכמה - יעיל במיוחד, מונע קריסות (OnlyEnforceIf with Boolean Not)
+    # אילוץ מנוחה חכמה
     rest_violation_vars = []
     for s in soldiers:
         for t in tasks:
@@ -248,7 +257,6 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
                         
                         if soft_rest:
                             viol = model.NewBoolVar(f"rv_{s.soldier_id}_{t.task_id}_{h}_{rest_h}")
-                            # אם סיימנו משימה ואנחנו לא משלמים קנס, העבודה חייבת להיות 0
                             model.Add(future_work == 0).OnlyEnforceIf([end_var[s.soldier_id, h], viol.Not()])
                             rest_violation_vars.append(viol)
                         else:
@@ -293,7 +301,6 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
     dummy_work = sum(x[dummy.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
     total_rest_violations = sum(rest_violation_vars) if rest_violation_vars else model.NewIntVar(0,0,'no_rv')
 
-    # הורדנו את ה-starts_vars מפונקציית המטרה, החלון מטפל ברציפות כהלכה!
     model.Minimize(
         50000 * dummy_work          
         + 300 * total_rest_violations       
@@ -304,7 +311,7 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
-    solver.parameters.num_search_workers  = 4 # מותאם בצורה אופטימלית לשרתים ול-CP-SAT
+    solver.parameters.num_search_workers  = 4 
     solver.parameters.log_search_progress = False
     
     status = solver.Solve(model)
@@ -344,7 +351,6 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
 
     df = pd.DataFrame(rows)
     
-    # סינון דמי בטוח ונקי
     if dummy_usage_count > 0:
         dummy_rows = df[df["שם"] == dummy.name]
         other_rows = df[df["שם"] != dummy.name]
@@ -356,14 +362,13 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
 
     return df, total_rest_viol_count, dummy_usage_count
 
-
 # ══════════════════════════════════════════════════════════════════
 # 4. ממשק ראשי מוגן קריסות
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="app-header">
-  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v10.3)</h1>
-  <p>אופטימיזציה מקסימלית · משתני השלכה נקיים · סינון ודיוק אלגוריתמי</p>
+  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v10.4)</h1>
+  <p>חסינות מתמטית הרמטית · שחרור חייל הרפאים מאילוצי כפל ומשמרת · תיקון יציבות קלט</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -374,15 +379,8 @@ with tab_templates:
     s_ex = pd.DataFrame({'מספר אישי': [1001, 1002], 'שם מלא': ['ישראל ישראלי', 'יוסי כהן'], 'פטורים': ['', '101'], 'הסמכות': ['נהג', 'קצין'], 'שעות חסימה': ['', '10-14']})
     t_ex = pd.DataFrame({'מס"ד משימה': [101, 102], 'שם המשימה': ['סיור', 'שמירה'], 'סד"כ נדרש למשימה': [1, 2], 'משך משמרת': [4, 4], 'שעות מנוחה בין משימות': [8, 4], 'אישור חפיפה בין משימות': [False, False], 'שעות פעילות': ['all', '05:30-07:30'], 'הסמכה נדרשת': ['', ''], 'דירוג עצימות משימה (1-3)': [3, 1], 'תפקידים חסומים': ['', '']})
     c1, c2 = st.columns(2)
-    with c1: st.download_button("⬇️ הורד תבנית חיילים", data=to_excel_styled(s_ex, "Soldiers", False), file_name="Soldiers_v10.3.xlsx")
-    with c2: st.download_button("⬇️ הורד תבנית משימות", data=to_excel_styled(t_ex, "Tasks", False), file_name="Tasks_v10.3.xlsx")
-
-with tab_guide:
-    st.markdown("""
-    ### 📖 מדריך v10.3 - עדכוני אלגוריתם
-    * **אופטימיזציית מנוחה (`OnlyEnforceIf`):** חסכנו אלפי משתני רשת ושיפרנו את מהירות הריצה.
-    * **שליפת עמודות גמישה:** האפליקציה חסינה כעת לשינויים קלים בשמות העמודות בקובץ משימות.
-    """)
+    with c1: st.download_button("⬇️ הורד תבנית חיילים", data=to_excel_styled(s_ex, "Soldiers", False), file_name="Soldiers_v10.4.xlsx")
+    with c2: st.download_button("⬇️ הורד תבנית משימות", data=to_excel_styled(t_ex, "Tasks", False), file_name="Tasks_v10.4.xlsx")
 
 with tab_run:
     col_u1, col_u2 = st.columns(2)
@@ -394,7 +392,7 @@ with tab_run:
         soft_rest  = st.toggle("אילוצי מנוחה רכים", value=True)
 
     if sf and tf:
-        if st.button('⚙️ צור שבצ"ק חכם (v10.3)', key="run_btn"):
+        if st.button('⚙️ צור שבצ"ק חכם (v10.4)', key="run_btn"):
             try:
                 with st.spinner("מנקה נתוני אקסל ובונה מטריצות..."):
                     s_df = pd.read_excel(sf)
@@ -403,7 +401,6 @@ with tab_run:
                     s_df_clean = s_df.dropna(subset=[c for c in s_df.columns if 'מספר' in c or 'אישי' in c][:1] + [c for c in s_df.columns if 'שם' in c][:1])
                     t_df_clean = t_df.dropna(subset=[c for c in t_df.columns if 'מס"ד' in c or 'משימה' in c][:1])
 
-                    # חילוץ עמודות דינמי ובטוח (ללא [1] Hardcoded)
                     id_col = next(c for c in s_df_clean.columns if 'מספר' in c or 'אישי' in c)
                     name_col = next(c for c in s_df_clean.columns if 'שם' in c)
                     t_id_col = next(c for c in t_df_clean.columns if 'מס"ד' in c or 'משימה' in c)
@@ -413,14 +410,14 @@ with tab_run:
                     soldiers = [Soldier(r[id_col], r[name_col], r.get('פטורים', ''), r.get('הסמכות', ''), r.get('שעות חסימה', '')) for _, r in s_df_clean.iterrows()]
                     tasks = [Task(r[t_id_col], r[t_name_col], r[t_req_col], r.get('משך משמרת'), r.get('שעות מנוחה בין משימות'), r.get('אישור חפיפה בין משימות'), r.get('שעות פעילות'), r.get('הסמכה נדרשת', ''), r.get('דירוג עצימות משימה (1-3)', r.get('דירוג עצימות המשימה', 1)), r.get('תפקידים חסומים', '')) for _, r in t_df_clean.iterrows()]
 
-                with st.spinner(f"מריץ אופטימיזציה מהירה ויעילה ({time_limit} שניות)..."):
+                with st.spinner(f"מריץ אופטימיזציה חסינה מתמטית ({time_limit} שניות)..."):
                     final_df, rest_viols, dummy_usage = solve_scheduling(soldiers, tasks, time_limit=time_limit, soft_rest=soft_rest)
 
                 if final_df is not None:
                     avg_h = final_df["סך שעות"].mean()
 
                     if dummy_usage > 0:
-                        st.markdown(f'<div class="error-box">🚨 <b>סד"כ חסר!</b> המערכת לא מצאה חיילים זמינים כדי לכסות {dummy_usage} שעות. השעות סומנו בטבלה כ"⚠️ חייל חסר".</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="error-box">🚨 <b>סד"כ חסר!</b> המערכת לא מצאה מספיק לוחמים זמינים כדי לכסות את כלל העמדות (חסרות {dummy_usage} שעות איוש). השעות החסרות שובצו תחת "⚠️ חייל חסר".</div>', unsafe_allow_html=True)
                     elif rest_viols > 0:
                         st.markdown(f'<div class="warn-box">⚠️ <b>שימו לב:</b> בוצעו {rest_viols} חריגות ממנוחת חובה כדי לא להשאיר עמדות ריקות.</div>', unsafe_allow_html=True)
                     else:
@@ -437,9 +434,9 @@ with tab_run:
 
                     st.subheader("📅 לוח השיבוץ הסופי")
                     st.table(final_df)
-                    st.download_button("📥 הורד לוח שיבוץ (Excel)", data=to_excel_styled(final_df), file_name="Final_Shavtzak_v10.3.xlsx")
+                    st.download_button("📥 הורד לוח שיבוץ (Excel)", data=to_excel_styled(final_df), file_name="Final_Shavtzak_v10.4.xlsx")
                 else:
-                    st.markdown('<div class="error-box">❌ לא נמצא פתרון. נסו להגדיל את זמן הפתרון בהגדרות.</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="error-box">❌ לא נמצא פתרון. קיימת התנגשות קשיחה בין שעות פעילות המשימה למשך המשמרת (למשל: משימה קצרה ממשך המשמרת המבוקש). בדקו את זמני המשימות באקסל.</div>', unsafe_allow_html=True)
             except Exception as inner_error:
                 st.error("🚨 תקלה טכנית - האפליקציה הגנה על עצמה מקריסה!")
                 st.code(traceback.format_exc())

@@ -152,13 +152,12 @@ def build_greedy_hints(all_soldiers, tasks, num_hours=24):
     return hints
 
 # ══════════════════════════════════════════════════════════════════
-# 3. מנוע CP-SAT המשופר והחסין (v10.4)
+# 3. מנוע CP-SAT (v10.5) - מותאם למאסה גדולה של לוחמים (סד"כ גדודי)
 # ══════════════════════════════════════════════════════════════════
 def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limit: float = 120.0, soft_rest: bool = True):
     model = cp_model.CpModel()
     x = {}
     start_var = {}
-    end_var = {}
     
     SLEEP_WINDOW = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8]
     zero_var = model.NewIntVar(0, 0, 'zero_const')
@@ -180,42 +179,35 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
         if key in x:
             model.AddHint(x[key], val)
 
-    # משתני עזר לזיהוי התחלה וסיום
-    for s in all_soldiers:
+    # משתני עזר לזיהוי התחלה (רק לחיילים אמיתיים - חיסכון בזיכרון)
+    for s in soldiers:
         for h in range(num_hours):
             start_var[s.soldier_id, h] = model.NewBoolVar(f"start_{s.soldier_id}_{h}")
-            end_var[s.soldier_id, h] = model.NewBoolVar(f"end_{s.soldier_id}_{h}")
-
-    for s in all_soldiers:
-        for h in range(num_hours):
             current_work = sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots)))
             prev_work = sum(x[s.soldier_id, t.task_id, slot, (h-1)%num_hours] for t in tasks for slot in range(len(t.slots)))
             model.Add(start_var[s.soldier_id, h] >= current_work - prev_work)
-            model.Add(end_var[s.soldier_id, h] >= prev_work - current_work)
 
     # חסימות זמן לחיילים אמיתיים בלבד
-    for s in all_soldiers:
-        if s.soldier_id != dummy.soldier_id:
-            for h in s.unavail_hours:
-                if h < num_hours:
-                    model.Add(sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots))) == 0)
+    for s in soldiers:
+        for h in s.unavail_hours:
+            if h < num_hours:
+                model.Add(sum(x[s.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots))) == 0)
 
     # פטורים לחיילים אמיתיים בלבד
-    for s in all_soldiers:
+    for s in soldiers:
         for t in tasks:
-            if s.soldier_id != dummy.soldier_id:
-                if any(role in t.blocked_roles for role in s.roles) or (t.task_id in s.restricted_tasks):
-                    for slot_idx in range(len(t.slots)):
-                        for h in range(num_hours):
-                            model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
-                    continue
+            if any(role in t.blocked_roles for role in s.roles) or (t.task_id in s.restricted_tasks):
+                for slot_idx in range(len(t.slots)):
+                    for h in range(num_hours):
+                        model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
+                continue
 
             for slot_idx, required_role in enumerate(t.slots):
-                if s.soldier_id != dummy.soldier_id and required_role is not None and required_role not in s.roles:
+                if required_role is not None and required_role not in s.roles:
                     for h in range(num_hours):
                         model.Add(x[s.soldier_id, t.task_id, slot_idx, h] == 0)
 
-    # אילוץ כיסוי עמדות
+    # אילוץ כיסוי עמדות (כולל דמי)
     for t in tasks:
         for slot_idx in range(len(t.slots)):
             for h in range(num_hours):
@@ -225,43 +217,49 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
                 else:
                     model.Add(assigned == 0)
 
-    # מיזעור חפיפות לחיילים אמיתיים בלבד (חייל רפאים יכול להשתכפל חופשי!)
-    for s in all_soldiers:
-        if s.soldier_id == dummy.soldier_id: continue # התיקון הקריטי למניעת Infeasible
+    # מיזעור חפיפות לחיילים אמיתיים בלבד
+    for s in soldiers:
         for h in range(num_hours):
             blocking = [x[s.soldier_id, t.task_id, slot_idx, h] for t in tasks if not t.allow_overlap for slot_idx in range(len(t.slots))]
             model.Add(sum(blocking) <= 1)
 
-    # אילוץ אורך משמרת לחיילים אמיתיים בלבד
-    for s in all_soldiers:
-        if s.soldier_id == dummy.soldier_id: continue # חייל רפאים לא כבול למשמרות רציפות
+    # אילוץ "עד X שעות" משמרת גמיש וחסכוני בזיכרון
+    for s in soldiers:
         for t in tasks:
             for slot_idx in range(len(t.slots)):
-                if t.shift_duration > 1:
+                if t.shift_duration > 0:
                     for h in range(num_hours):
-                        # מוודאים שאורך המשמרת לא חורג משעות הפעילות של המשימה עצמה
-                        valid_hours_in_window = sum(1 for i in range(t.shift_duration) if ((h+i)%num_hours) in t.active_hours)
-                        if valid_hours_in_window == t.shift_duration:
-                            window = [x[s.soldier_id, t.task_id, slot_idx, (h+i)%num_hours] for i in range(t.shift_duration)]
-                            model.Add(sum(window) >= t.shift_duration * x[s.soldier_id, t.task_id, slot_idx, h]).OnlyEnforceIf(start_var[s.soldier_id, h])
+                        window = [x[s.soldier_id, t.task_id, slot_idx, (h+i)%num_hours] for i in range(t.shift_duration + 1)]
+                        model.Add(sum(window) <= t.shift_duration)
 
-    # אילוץ מנוחה חכמה
+    # אילוץ מנוחה - ממוטב זיכרון (O(S*T*H) במקום פריסה פרטנית)
     rest_violation_vars = []
     for s in soldiers:
         for t in tasks:
             if t.rest_duration > 0 and not t.allow_overlap:
                 for h in range(num_hours):
-                    for offset in range(t.rest_duration):
-                        rest_h = (h + offset) % num_hours
-                        future_work = sum(x[s.soldier_id, other_t.task_id, other_slot, rest_h] for other_t in tasks if not other_t.allow_overlap for other_slot in range(len(other_t.slots)))
-                        
-                        if soft_rest:
-                            viol = model.NewBoolVar(f"rv_{s.soldier_id}_{t.task_id}_{h}_{rest_h}")
-                            model.Add(future_work == 0).OnlyEnforceIf([end_var[s.soldier_id, h], viol.Not()])
-                            rest_violation_vars.append(viol)
-                        else:
-                            model.Add(future_work == 0).OnlyEnforceIf(end_var[s.soldier_id, h])
+                    # יצירת משתנה "האם המשימה הסתיימה כעת"
+                    task_end = model.NewBoolVar(f"te_{s.soldier_id}_{t.task_id}_{h}")
+                    worked_prev = sum(x[s.soldier_id, t.task_id, slot, (h-1)%num_hours] for slot in range(len(t.slots)))
+                    worked_curr = sum(x[s.soldier_id, t.task_id, slot, h] for slot in range(len(t.slots)))
+                    model.Add(task_end >= worked_prev - worked_curr)
+                    
+                    # סכימת העבודה בכל חלון המנוחה כולו למשתנה אחד
+                    future_work = sum(
+                        x[s.soldier_id, other_t.task_id, other_slot, (h + offset) % num_hours]
+                        for offset in range(t.rest_duration)
+                        for other_t in tasks if not other_t.allow_overlap
+                        for other_slot in range(len(other_t.slots))
+                    )
+                    
+                    if soft_rest:
+                        viol = model.NewBoolVar(f"rv_{s.soldier_id}_{t.task_id}_{h}")
+                        model.Add(future_work == 0).OnlyEnforceIf([task_end, viol.Not()])
+                        rest_violation_vars.append(viol)
+                    else:
+                        model.Add(future_work == 0).OnlyEnforceIf(task_end)
 
+    # בניית משתני מטרה
     s_total_hours, s_intensity_scores, sleep_penalties = [], [], []
 
     for s in soldiers:
@@ -300,13 +298,16 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
 
     dummy_work = sum(x[dummy.soldier_id, t.task_id, slot, h] for t in tasks for slot in range(len(t.slots)) for h in range(num_hours))
     total_rest_violations = sum(rest_violation_vars) if rest_violation_vars else model.NewIntVar(0,0,'no_rv')
+    total_starts = sum(start_var[s.soldier_id, h] for s in soldiers for h in range(num_hours))
 
+    # משקלים מעודכנים למניעת תופעת Symmetry ("מלכודת ההוגנות")
     model.Minimize(
         50000 * dummy_work          
         + 300 * total_rest_violations       
-        + 100 * load_diff
-        + 50  * int_diff
         + 150 * sum(sleep_penalties)
+        + 500 * total_starts  # קנס עצום על קיטוע משמרות (מנצח את האיזון לחלוטין)
+        + 50  * load_diff     # איזון יתבצע רק על בלוקים רצופים 
+        + 25  * int_diff
     )
 
     solver = cp_model.CpSolver()
@@ -363,12 +364,12 @@ def solve_scheduling(soldiers: list, tasks: list, num_hours: int = 24, time_limi
     return df, total_rest_viol_count, dummy_usage_count
 
 # ══════════════════════════════════════════════════════════════════
-# 4. ממשק ראשי מוגן קריסות
+# 4. ממשק ראשי 
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="app-header">
-  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v10.4)</h1>
-  <p>חסינות מתמטית הרמטית · שחרור חייל הרפאים מאילוצי כפל ומשמרת · תיקון יציבות קלט</p>
+  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v10.5)</h1>
+  <p>גרסת "סד"כ גדודי" · אופטימיזציית זיכרון עמוקה · חסינות ל-Fairness Traps</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -379,8 +380,8 @@ with tab_templates:
     s_ex = pd.DataFrame({'מספר אישי': [1001, 1002], 'שם מלא': ['ישראל ישראלי', 'יוסי כהן'], 'פטורים': ['', '101'], 'הסמכות': ['נהג', 'קצין'], 'שעות חסימה': ['', '10-14']})
     t_ex = pd.DataFrame({'מס"ד משימה': [101, 102], 'שם המשימה': ['סיור', 'שמירה'], 'סד"כ נדרש למשימה': [1, 2], 'משך משמרת': [4, 4], 'שעות מנוחה בין משימות': [8, 4], 'אישור חפיפה בין משימות': [False, False], 'שעות פעילות': ['all', '05:30-07:30'], 'הסמכה נדרשת': ['', ''], 'דירוג עצימות משימה (1-3)': [3, 1], 'תפקידים חסומים': ['', '']})
     c1, c2 = st.columns(2)
-    with c1: st.download_button("⬇️ הורד תבנית חיילים", data=to_excel_styled(s_ex, "Soldiers", False), file_name="Soldiers_v10.4.xlsx")
-    with c2: st.download_button("⬇️ הורד תבנית משימות", data=to_excel_styled(t_ex, "Tasks", False), file_name="Tasks_v10.4.xlsx")
+    with c1: st.download_button("⬇️ הורד תבנית חיילים", data=to_excel_styled(s_ex, "Soldiers", False), file_name="Soldiers_v10.5.xlsx")
+    with c2: st.download_button("⬇️ הורד תבנית משימות", data=to_excel_styled(t_ex, "Tasks", False), file_name="Tasks_v10.5.xlsx")
 
 with tab_run:
     col_u1, col_u2 = st.columns(2)
@@ -392,7 +393,7 @@ with tab_run:
         soft_rest  = st.toggle("אילוצי מנוחה רכים", value=True)
 
     if sf and tf:
-        if st.button('⚙️ צור שבצ"ק חכם (v10.4)', key="run_btn"):
+        if st.button('⚙️ צור שבצ"ק חכם (v10.5)', key="run_btn"):
             try:
                 with st.spinner("מנקה נתוני אקסל ובונה מטריצות..."):
                     s_df = pd.read_excel(sf)
@@ -434,7 +435,7 @@ with tab_run:
 
                     st.subheader("📅 לוח השיבוץ הסופי")
                     st.table(final_df)
-                    st.download_button("📥 הורד לוח שיבוץ (Excel)", data=to_excel_styled(final_df), file_name="Final_Shavtzak_v10.4.xlsx")
+                    st.download_button("📥 הורד לוח שיבוץ (Excel)", data=to_excel_styled(final_df), file_name="Final_Shavtzak_v10.5.xlsx")
                 else:
                     st.markdown('<div class="error-box">❌ לא נמצא פתרון. קיימת התנגשות קשיחה בין שעות פעילות המשימה למשך המשמרת (למשל: משימה קצרה ממשך המשמרת המבוקש). בדקו את זמני המשימות באקסל.</div>', unsafe_allow_html=True)
             except Exception as inner_error:

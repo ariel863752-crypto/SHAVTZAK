@@ -12,381 +12,53 @@ st.set_page_config(page_title='שבצ"ק חכם', page_icon="🪖", layout="wide
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap');
-
-:root {
-  --bg:        #0d0f14;
-  --surface:   #13161e;
-  --surface2:  #1a1e2a;
-  --border:    rgba(255,255,255,0.07);
-  --accent:    #00e5a0;
-  --accent2:   #00b87a;
-  --text:      #e8ecf4;
-  --muted:     #6b7590;
-  --warn:      #f0a500;
-  --danger:    #ff4d6d;
-  --radius:    14px;
-}
-
-html, body { direction: rtl; }
-
-/* ── app background ── */
-.stApp, [data-testid="stAppViewContainer"] {
-  background: var(--bg) !important;
-  background-image:
-    radial-gradient(ellipse 80% 40% at 60% -10%, rgba(0,229,160,0.07) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 30% at 10% 80%,  rgba(0,184,122,0.05) 0%, transparent 55%);
-}
-
-.main, .block-container { padding: 2rem 2.5rem 3rem; max-width: 1440px; }
-
-/* ── all text RTL + font ── */
-.stApp, .stMarkdown, p, span, li, label, div,
-[data-testid="stText"], [data-testid="stMarkdownContainer"],
-[data-testid="stAlert"], [data-testid="stExpander"] summary,
-[data-testid="stFileUploader"] label, [data-testid="stFileUploader"] div,
-[data-testid="stSlider"] label, [data-testid="stSelectbox"] label {
-  font-family: 'Heebo', sans-serif !important;
-  direction: rtl !important;
-  text-align: right !important;
-  color: var(--text);
-}
-
-/* ── header ── */
-.app-header {
-  position: relative;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-top: 2px solid var(--accent);
-  border-radius: var(--radius);
-  padding: 36px 40px 30px;
-  margin-bottom: 32px;
-  overflow: hidden;
-}
-.app-header::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: radial-gradient(ellipse 70% 80% at 90% 50%, rgba(0,229,160,0.06) 0%, transparent 70%);
-  pointer-events: none;
-}
-.app-header-badge {
-  display: inline-block;
-  background: rgba(0,229,160,0.12);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  padding: 4px 12px;
-  border-radius: 20px;
-  border: 1px solid rgba(0,229,160,0.25);
-  margin-bottom: 14px;
-}
-.app-header h1 {
-  font-size: clamp(24px, 3.5vw, 40px);
-  font-weight: 900;
-  color: #fff !important;
-  margin: 0 0 10px;
-  letter-spacing: -1px;
-  line-height: 1.1;
-}
-.app-header h1 span { color: var(--accent); }
-.app-header p {
-  font-size: 14px;
-  color: var(--muted) !important;
-  margin: 0;
-  line-height: 1.7;
-}
-
-/* ── tabs ── */
-[data-testid="stTabs"] [data-baseweb="tab-list"] {
-  flex-direction: row-reverse !important;
-  justify-content: flex-start !important;
-  gap: 4px;
-  background: var(--surface) !important;
-  border-radius: 10px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  margin-bottom: 24px;
-}
-[data-testid="stTabs"] [data-baseweb="tab"] {
-  border-radius: 7px;
-  font-weight: 600;
-  font-size: 13px;
-  padding: 8px 22px;
-  color: var(--muted) !important;
-  direction: rtl;
-  transition: all 0.15s;
-  background: transparent !important;
-}
-[data-testid="stTabs"] [aria-selected="true"] {
-  background: var(--accent) !important;
-  color: #000 !important;
-  font-weight: 700 !important;
-}
-
-/* ── metric cards ── */
-.metric-row {
-  display: flex;
-  flex-direction: row-reverse;
-  gap: 14px;
-  margin: 24px 0;
-  flex-wrap: wrap;
-}
-.metric-card {
-  flex: 1;
-  min-width: 150px;
-  background: var(--surface);
-  border-radius: var(--radius);
-  padding: 22px 20px;
-  border: 1px solid var(--border);
-  text-align: right;
-  direction: rtl;
-  position: relative;
-  overflow: hidden;
-  transition: border-color 0.2s;
-}
-.metric-card::after {
-  content: '';
-  position: absolute;
-  bottom: 0; right: 0; left: 0;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  opacity: 0.4;
-}
-.mc-label {
-  font-size: 10px;
-  color: var(--muted) !important;
-  font-weight: 700;
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  margin-bottom: 10px;
-}
-.mc-value {
-  font-size: 36px;
-  font-weight: 900;
-  color: #fff !important;
-  line-height: 1;
-  letter-spacing: -1px;
-}
-.mc-sub {
-  font-size: 11px;
-  color: var(--muted) !important;
-  margin-top: 6px;
-}
-
-/* ── primary button ── */
-div.stButton > button:first-child {
-  background: var(--accent) !important;
-  color: #000 !important;
-  font-weight: 800 !important;
-  font-size: 15px !important;
-  border-radius: 10px !important;
-  border: none !important;
-  height: 3.2em;
-  width: 100%;
-  letter-spacing: 0.3px;
-  box-shadow: 0 0 24px rgba(0,229,160,0.2);
-  transition: all 0.18s !important;
-}
-div.stButton > button:first-child:hover {
-  background: #00ffb3 !important;
-  box-shadow: 0 0 36px rgba(0,229,160,0.35) !important;
-}
-
-/* ── download button ── */
-[data-testid="stDownloadButton"] > button {
-  background: var(--surface2) !important;
-  color: var(--accent) !important;
-  font-weight: 700 !important;
-  border-radius: 10px !important;
-  border: 1px solid rgba(0,229,160,0.3) !important;
-}
-
-/* ── file uploader ── */
-[data-testid="stFileUploader"] {
-  background: var(--surface);
-  border-radius: var(--radius);
-  padding: 16px 18px;
-  border: 1px dashed rgba(0,229,160,0.25);
-  direction: rtl;
-  text-align: right;
-}
-
-/* ── table ── */
-[data-testid="stTable"] table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-  background: var(--surface);
-  direction: rtl;
-}
-[data-testid="stTable"] th {
-  background: var(--surface2) !important;
-  color: var(--accent) !important;
-  padding: 11px 14px !important;
-  font-weight: 700 !important;
-  font-size: 11px !important;
-  letter-spacing: 0.5px !important;
-  text-align: right !important;
-  border-bottom: 1px solid rgba(0,229,160,0.2) !important;
-}
-[data-testid="stTable"] td {
-  padding: 9px 14px !important;
-  border-bottom: 1px solid var(--border) !important;
-  text-align: right !important;
-  color: var(--text) !important;
-}
-[data-testid="stTable"] tr:nth-child(even) td {
-  background: rgba(255,255,255,0.02) !important;
-}
-[data-testid="stTable"] tr:hover td {
-  background: rgba(0,229,160,0.04) !important;
-}
-
-/* ── info / warn / error boxes ── */
-.info-box {
-  background: rgba(0,229,160,0.06);
-  border-right: 3px solid var(--accent);
-  padding: 14px 18px;
-  margin: 14px 0;
-  font-size: 14px;
-  color: var(--text) !important;
-  line-height: 1.8;
-  direction: rtl;
-  text-align: right;
-  border-radius: 0 10px 10px 0;
-}
-.warn-box {
-  background: rgba(240,165,0,0.08);
-  border-right: 3px solid var(--warn);
-  padding: 14px 18px;
-  margin: 14px 0;
-  font-size: 14px;
-  color: var(--text) !important;
-  line-height: 1.8;
-  direction: rtl;
-  text-align: right;
-  border-radius: 0 10px 10px 0;
-}
-.error-box {
-  background: rgba(255,77,109,0.08);
-  border-right: 3px solid var(--danger);
-  padding: 14px 18px;
-  margin: 14px 0;
-  font-size: 14px;
-  color: var(--text) !important;
-  line-height: 1.8;
-  direction: rtl;
-  text-align: right;
-  border-radius: 0 10px 10px 0;
-}
-
-/* ── expander ── */
-[data-testid="stExpander"] {
-  background: var(--surface) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: var(--radius) !important;
-}
-[data-testid="stExpander"] summary {
-  color: var(--text) !important;
-  font-weight: 600 !important;
-}
-
-/* ── inputs & sliders ── */
-[data-testid="stSlider"] > div > div > div {
-  background: var(--accent) !important;
-}
-.stSelectbox > div > div {
-  background: var(--surface2) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: 8px !important;
-  color: var(--text) !important;
-}
-
-/* ── divider ── */
-hr { border-color: var(--border) !important; margin: 28px 0 !important; }
-
-/* ── section title ── */
-h2, h3 { color: #fff !important; font-weight: 800 !important; letter-spacing: -0.5px; }
-
-/* ── guide cards ── */
-.guide-section {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 24px 28px;
-  margin-bottom: 16px;
-}
-.guide-section h4 {
-  font-size: 13px !important;
-  font-weight: 700 !important;
-  color: var(--accent) !important;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  margin: 0 0 16px !important;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-.guide-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-  direction: rtl;
-}
-.guide-table th {
-  color: var(--muted) !important;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  text-align: right;
-}
-.guide-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(255,255,255,0.03);
-  color: var(--text) !important;
-  text-align: right;
-}
-.guide-table td:first-child {
-  color: #fff !important;
-  font-weight: 600;
-}
-.guide-table td code {
-  background: rgba(0,229,160,0.1);
-  color: var(--accent) !important;
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-family: 'Courier New', monospace;
-}
-.tag {
-  display: inline-block;
-  background: rgba(0,229,160,0.1);
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 20px;
-  letter-spacing: 0.5px;
-  margin-right: 6px;
-  vertical-align: middle;
-}
-
-/* ── toggle ── */
-[data-testid="stCheckbox"] span, label[data-testid="stWidgetLabel"] {
-  color: var(--text) !important;
-}
-
-/* ── info box streamlit native ── */
-[data-testid="stAlert"] {
-  background: rgba(0,229,160,0.06) !important;
-  border: 1px solid rgba(0,229,160,0.15) !important;
-  border-radius: 10px !important;
-  color: var(--text) !important;
-}
+html,body{direction:rtl}
+.stApp,[data-testid="stAppViewContainer"],.main,.block-container,
+.stMarkdown,p,span,li,label,div,
+[data-testid="stText"],[data-testid="stMarkdownContainer"],
+[data-testid="stAlert"],[data-testid="stExpander"] summary,
+[data-testid="stFileUploader"] label,[data-testid="stFileUploader"] div,
+[data-testid="stSlider"] label,[data-testid="stSelectbox"] label{
+  font-family:'Heebo',sans-serif!important;direction:rtl!important;text-align:right!important}
+.stApp{background:#f2f5f2}.block-container{padding:2rem 2.5rem 3rem;max-width:1400px}
+.app-header{background:linear-gradient(135deg,#1a3d17 0%,#2d5a27 60%,#3d7a35 100%);
+  border-radius:16px;padding:30px 35px;margin-bottom:28px;
+  box-shadow:0 4px 20px rgba(45,90,39,.25);text-align:right}
+.app-header h1{font-size:clamp(22px,4vw,38px);font-weight:900;color:white;margin:0 0 8px;letter-spacing:-.5px}
+.app-header p{font-size:15px;color:rgba(255,255,255,.88);margin:0}
+[data-testid="stTabs"] [data-baseweb="tab-list"]{flex-direction:row-reverse!important;
+  justify-content:flex-start!important;gap:6px;background:white;border-radius:12px;
+  padding:5px;border:1px solid #dde8dc;margin-bottom:20px}
+[data-testid="stTabs"] [data-baseweb="tab"]{border-radius:8px;font-weight:600;
+  font-size:14px;padding:8px 20px;color:#5a7a57;direction:rtl}
+[data-testid="stTabs"] [aria-selected="true"]{background:#2d5a27!important;color:white!important}
+.metric-row{display:flex;flex-direction:row-reverse;gap:16px;margin:22px 0;flex-wrap:wrap}
+.metric-card{flex:1;min-width:160px;background:white;border-radius:14px;padding:22px;
+  border:1px solid #dde8dc;box-shadow:0 2px 8px rgba(45,90,39,.07);text-align:right;direction:rtl}
+.mc-label{font-size:11px;color:#7a9a77;font-weight:700;letter-spacing:.8px;margin-bottom:6px}
+.mc-value{font-size:34px;font-weight:900;color:#1a3d17;line-height:1}
+.mc-sub{font-size:12px;color:#a0b89d;margin-top:4px}
+div.stButton>button:first-child{background:linear-gradient(135deg,#2d5a27,#3d7a35)!important;
+  color:white!important;font-weight:700!important;font-size:17px!important;
+  border-radius:10px!important;border:none!important;height:3.4em;width:100%;
+  box-shadow:0 4px 14px rgba(45,90,39,.3);transition:all .18s!important}
+[data-testid="stDownloadButton"]>button{background:#b84d00!important;color:white!important;
+  font-weight:600!important;border-radius:10px!important;border:none!important}
+[data-testid="stFileUploader"]{background:white;border-radius:12px;padding:14px 16px;
+  border:2px dashed #c0d8bc;direction:rtl;text-align:right}
+[data-testid="stTable"] table{width:100%;border-collapse:collapse;font-size:12px;
+  background:white;direction:rtl}
+[data-testid="stTable"] th{background:#2d5a27!important;color:white!important;
+  padding:9px 12px!important;font-weight:600!important;text-align:right!important}
+[data-testid="stTable"] td{padding:8px 12px!important;border-bottom:1px solid #f0f0f0!important;
+  text-align:right!important}
+[data-testid="stTable"] tr:nth-child(even) td{background:#f8fcf7!important}
+.info-box{background:#edf5ec;border-right:5px solid #2d5a27;padding:14px 18px;margin:14px 0;
+  font-size:14px;color:#1a3d17;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
+.warn-box{background:#fff8e6;border-right:5px solid #e67e22;padding:14px 18px;margin:14px 0;
+  font-size:14px;color:#7a4500;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
+.error-box{background:#fdecea;border-right:5px solid #c0392b;padding:14px 18px;margin:14px 0;
+  font-size:14px;color:#7a0010;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
 </style>
 """, unsafe_allow_html=True)
 
@@ -928,13 +600,12 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="app-header">
-  <div class="app-header-badge">SHAVTZAK · v15</div>
-  <h1>🪖 מערכת שיבוץ <span>חכמה</span></h1>
-  <p>אלגוריתם גריידי מהיר · אופטימיזציה CP-SAT · תמיד מחזיר לוח מלא · תומך פורמטי שעה מורכבים</p>
+  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v15)</h1>
+  <p>גריידי מהיר + CP-SAT חכם ועצמאי · תומך HH:MM · חיילים לא נחסמים לשווא · תמיד מחזיר לוח מלא</p>
 </div>
 """, unsafe_allow_html=True)
 
-tab_run, tab_guide, tab_templates = st.tabs(["🚀  שיבוץ", "📖  מדריך", "📥  תבניות"])
+tab_run, tab_guide, tab_templates = st.tabs(["🚀  ביצוע שיבוץ", "📖  מדריך", "📥  תבניות"])
 
 # ── תבניות ──────────────────────────────────────────────────────
 with tab_templates:
@@ -974,65 +645,38 @@ with tab_templates:
 # ── מדריך ───────────────────────────────────────────────────────
 with tab_guide:
     st.markdown("""
-<div class="guide-section">
-  <h4>👥 קובץ חיילים</h4>
-  <table class="guide-table">
-    <thead>
-      <tr><th>עמודה</th><th>הסבר</th><th>דוגמה</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>מספר אישי</td><td>מזהה ייחודי לכל חייל</td><td><code>1001</code></td></tr>
-      <tr><td>שם מלא</td><td>שם להצגה בלוח</td><td><code>ישראל ישראלי</code></td></tr>
-      <tr><td>פטורים</td><td>מס"ד משימות חסומות, מופרדות בפסיק</td><td><code>101,103</code></td></tr>
-      <tr><td>הסמכות</td><td>תפקידים (אם יש), מופרדים בפסיק</td><td><code>נהג,מפקד</code></td></tr>
-      <tr><td>שעות חסימה</td><td>שעות לא זמין — תומך HH:MM ומעגלי</td><td><code>10-14</code> / <code>22-6</code> / <code>08:30-16:00</code></td></tr>
-    </tbody>
-  </table>
-</div>
+### 📖 מדריך v15
 
-<div class="guide-section">
-  <h4>📋 קובץ משימות</h4>
-  <table class="guide-table">
-    <thead>
-      <tr><th>עמודה</th><th>הסבר</th><th>דוגמה</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>מס"ד משימה</td><td>מזהה מספרי ייחודי</td><td><code>101</code></td></tr>
-      <tr><td>שם המשימה</td><td>שם קצר להצגה</td><td><code>שמירה</code></td></tr>
-      <tr><td>סד"כ נדרש</td><td>כמות חיילים בו-זמנית</td><td><code>3</code></td></tr>
-      <tr><td>משך משמרת</td><td>שעות רצופות לכל משמרת</td><td><code>4</code></td></tr>
-      <tr><td>שעות מנוחה</td><td>צינון חובה אחרי המשמרת</td><td><code>8</code></td></tr>
-      <tr><td>אישור חפיפה</td><td>האם מותר לחייל לבצע במקביל?</td><td><code>True</code> / <code>False</code></td></tr>
-      <tr><td>שעות פעילות</td><td>מתי המשימה פעילה</td><td><code>all</code> / <code>8-20</code> / <code>6,7,8</code></td></tr>
-      <tr><td>הסמכה נדרשת</td><td>תפקיד ספציפי נדרש</td><td><code>נהג</code></td></tr>
-      <tr><td>דירוג עצימות</td><td>עומס יחסי של המשימה</td><td><code>1</code> / <code>2</code> / <code>3</code></td></tr>
-      <tr><td>תפקידים חסומים</td><td>מי לא יכול לבצע</td><td><code>קצין</code></td></tr>
-    </tbody>
-  </table>
-</div>
+#### קובץ חיילים
+| עמודה | הסבר | דוגמה |
+|---|---|---|
+| מספר אישי | מזהה ייחודי | 1001 |
+| שם מלא | שם להצגה | ישראל ישראלי |
+| פטורים | מס"ד משימות חסומות | 101,103 |
+| הסמכות | תפקידים (אם יש) | נהג,מפקד |
+| שעות חסימה | שעות לא זמין | 10-14 / 22-6 / 08:30-16:00 |
 
-<div class="guide-section">
-  <h4>⚡ איך זה עובד</h4>
-  <table class="guide-table">
-    <tbody>
-      <tr>
-        <td><span class="tag">שלב 1</span></td>
-        <td>אלגוריתם גריידי משבץ חיילים לפי עומס מינימלי — מהיר, תמיד מחזיר תוצאה</td>
-      </tr>
-      <tr>
-        <td><span class="tag">שלב 2</span></td>
-        <td>CP-SAT מייעל הוגנות, מנוחה ושינה — עצמאי, יכול לתקן חוסרים מהגריידי</td>
-      </tr>
-      <tr>
-        <td><span class="tag">חייל רפאים</span></td>
-        <td>עמדה שלא אויישה מסומנת ⚠️ — מעיד על חוסר בכוח אדם</td>
-      </tr>
-      <tr>
-        <td><span class="tag">קנסות</span></td>
-        <td>חוסר איוש (100K) › חריגת מנוחה (500) › פגיעה בשינה (200) › אי-הוגנות (100)</td>
-      </tr>
-    </tbody>
-  </table>
+#### קובץ משימות
+| עמודה | הסבר | דוגמה |
+|---|---|---|
+| מס"ד משימה | מזהה | 101 |
+| שם המשימה | שם קצר | שמירה |
+| סד"כ נדרש | כמות חיילים | 3 |
+| משך משמרת | שעות רצופות | 4 |
+| שעות מנוחה | צינון אחרי משמרת | 8 |
+| אישור חפיפה | True/False | False |
+| שעות פעילות | all / 8-20 / 6,7,8 | all |
+| הסמכה נדרשת | תפקיד ספציפי | נהג |
+| דירוג עצימות | 1-3 | 2 |
+| תפקידים חסומים | מי לא יכול | קצין |
+""")
+    st.markdown("""
+<div class="info-box">
+<b>💡 v15 — שינויים עיקריים:</b><br>
+<b>✅ תיקון חסימת חיילים:</b> תא ריק בעמודת "שעות חסימה" לא מתורגם יותר ל-24 שעות — החייל פשוט לא חסום בכלל.<br>
+<b>✅ בדיקת משמרת שלמה:</b> <code>can_assign</code> בודק את כל שעות המשמרת, לא רק את שעת ההתחלה.<br>
+<b>✅ תמיכה ב-HH:MM:</b> שעות בפורמט <code>08:30</code> נקראות נכון (חולץ רק החלק של השעה).<br>
+<b>✅ CP-SAT עצמאי:</b> מנוע האופטימיזציה ממשיך לפעול באופן עצמאי לשיפור הוגנות ומנוחה.
 </div>
 """, unsafe_allow_html=True)
 
@@ -1049,12 +693,12 @@ with tab_run:
         cpsat_time = st.slider("זמן CP-SAT (שניות)", 10, 120, 45, 5)
         st.markdown(
             '<div class="info-box" style="font-size:12px">'
-            'הגריידי <b>תמיד</b> רץ ראשון ומבטיח תוצאה. '
-            'CP-SAT אופציונלי — משפר הוגנות ומנוחה מבלי לפגוע בכיסוי.</div>',
+            'הגריידי <b>תמיד</b> רץ ראשון ומחזיר תוצאה. '
+            'CP-SAT רק משפר הוגנות ומנוחה — לא ישנה כיסוי.</div>',
             unsafe_allow_html=True)
 
     if sf and tf:
-        if st.button('⚙️  הפעל שיבוץ חכם', use_container_width=True, key="run_btn"):
+        if st.button('⚙️ צור שבצ"ק חכם (v15)', use_container_width=True, key="run_btn"):
             try:
                 # ── קריאת קבצים ──────────────────────────────────
                 s_df = pd.read_excel(sf)
@@ -1238,6 +882,6 @@ with tab_run:
         st.markdown("""
         <div class="info-box">
         👆 <b>כדי להתחיל:</b> העלו קובץ חיילים וקובץ משימות.<br>
-        אין תבניות? לחצו על הטאב <b>תבניות</b> להורדה.
+        אין תבניות? לחצו על הטאב <b>תבניות</b>.
         </div>
         """, unsafe_allow_html=True)

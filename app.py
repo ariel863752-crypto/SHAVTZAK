@@ -66,17 +66,35 @@ div.stButton>button:first-child{background:linear-gradient(135deg,#2d5a27,#3d7a3
 # ══════════════════════════════════════════════════════════════════
 # 2. מחלקות נתונים
 # ══════════════════════════════════════════════════════════════════
-def parse_time_ranges(val) -> list:
-    """מפרש שעות פעילות: 'all', '8-16', '6,7,8', '22-6' (מעגלי)"""
+def parse_time_ranges(val, is_task=True) -> list:
+    """
+    מפרש שעות פעילות — תומך בפורמטים מורכבים.
+    is_task=True  → תא ריק = 24 שעות (משימה פעילה כל היום)
+    is_task=False → תא ריק = רשימה ריקה  (חייל לא חסום בכלל)
+    """
     if pd.isna(val) or str(val).strip().lower() in ('all', '', 'nan'):
-        return list(range(24))
+        return list(range(24)) if is_task else []
+
+    def to_hour(s: str) -> int:
+        """חולץ שעה שלמה מ-'8', '08', '08:30', '8.0'"""
+        s = s.strip()
+        if ':' in s:
+            return int(s.split(':')[0])
+        return int(float(s.replace('.0', '') or '0'))
+
     res = set()
     for part in str(val).split(','):
-        part = part.strip().split(':')[0].strip()
+        part = part.strip()
+        if not part or part.lower() == 'nan':
+            continue
+
         if '-' in part:
             ps = part.split('-')
-            if len(ps) == 2 and ps[0].strip().isdigit() and ps[1].strip().isdigit():
-                s, e = int(ps[0].strip()), int(ps[1].strip())
+            start_s = ps[0].strip()
+            end_s   = ps[-1].strip()
+            if start_s and end_s:
+                s = to_hour(start_s)
+                e = to_hour(end_s)
                 if s <= e:
                     for h in range(s, e + 1):
                         res.add(h % 24)
@@ -85,8 +103,12 @@ def parse_time_ranges(val) -> list:
                         res.add(h)
                     for h in range(0, e + 1):
                         res.add(h)
-        elif part.replace('.0', '').isdigit():
-            res.add(int(float(part)) % 24)
+        else:
+            try:
+                res.add(to_hour(part) % 24)
+            except (ValueError, IndexError):
+                pass
+
     return sorted(res)
 
 
@@ -104,18 +126,19 @@ class Soldier:
              if str(t).strip().replace('.0', '').isdigit()]
             if pd.notna(restr) and str(restr).strip() not in ('', 'nan') else []
         )
-        self.roles         = (
+        self.roles = (
             [r.strip() for r in str(roles).split(',') if r.strip()]
             if pd.notna(roles) and str(roles).strip() not in ('', 'nan') else []
         )
-        # חייל רפאים — לעולם לא חסום
-        self.blocked_hours = [] if is_dummy else parse_time_ranges(unavail)
+        # תיקון: is_task=False → תא ריק = לא חסום כלל (לא 24 שעות!)
+        self.blocked_hours = [] if is_dummy else parse_time_ranges(unavail, is_task=False)
 
-    def can_assign(self, task, h: int) -> bool:
-        """האם החייל יכול לבצע משימה זו בשעה זו?"""
+    def can_assign(self, task, shift_hours: list) -> bool:
+        """האם החייל יכול לבצע משימה זו בכל שעות המשמרת?"""
         if self.is_dummy:
-            return True  # רפאים תמיד יכול — הוא הפתרון האחרון
-        if h in self.blocked_hours:
+            return True  # רפאים תמיד יכול
+        # תיקון: בודק שכל שעות המשמרת פנויות (לא רק שעת ההתחלה)
+        if any(h in self.blocked_hours for h in shift_hours):
             return False
         if task.tid in self.exempt:
             return False
@@ -133,7 +156,7 @@ class Task:
         self.shift     = int(shift)   if pd.notna(shift)   else 1
         self.rest      = int(rest)    if pd.notna(rest)    else 0
         self.overlap   = str(overlap).strip().lower() == 'true'
-        self.hours     = parse_time_ranges(hours)
+        self.hours     = parse_time_ranges(hours)  # משימה → is_task=True (ברירת מחדל)
         self.intensity = int(intensity) if pd.notna(intensity) else 1
         self.block_roles = (
             [r.strip() for r in str(block_roles).split(',') if r.strip()]
@@ -209,33 +232,28 @@ def to_excel_styled(df: pd.DataFrame, sheet_name='שבצ"ק', include_index=True
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. לב המערכת: גריידי חכם v14
+# 4. לב המערכת: גריידי חכם v15
 #
-#  תיקונים לעומת v11:
-#  ✅ חייל רפאים (Dummy) — תמיד ממלא חוסר
-#  ✅ is_free תוקן — return False במקום pass
-#  ✅ עבודה לפי משמרות שלמות — לא לפי שעות בודדות
-#  ✅ mark_busy מודולרי — תומך במשמרות לילה חוצות חצות
-#  ✅ מניעת כפילות — חייל לא משובץ פעמיים לאותה שעה
-#  ✅ get_shift_starts — זיהוי נכון של תחילת כל משמרת
+#  תיקונים לעומת v14:
+#  ✅ parse_time_ranges(is_task=False) — תא ריק לא חוסם חיילים
+#  ✅ can_assign בודק את כל שעות המשמרת (לא רק start_h)
+#  ✅ to_hour — תמיכה בפורמט HH:MM
+#  ✅ greedy משתמש ב-shift_hours (לא start_h) ב-can_assign
 # ══════════════════════════════════════════════════════════════════
 
 def greedy_schedule(soldiers: list, tasks: list, num_hours: int = 24):
     """
     מחזיר:
       schedule[tid][slot_idx][h] = sid | DUMMY_SID | None
-      missing_slots  — רשימת (task_name, slot, h) שאויישו ע"י רפאים
-      work_hours     — {sid: מספר שעות}
+      dummy_slots  — רשימת (task_name, slot, sh, eh) שאויישו ע"י רפאים
+      work_hours   — {sid: מספר שעות}
       intensity_load — {sid: עומס עצימות}
     """
-    # schedule[tid][slot][h] = sid assigned
     schedule = {
         t.tid: {si: {h: None for h in range(num_hours)} for si in range(len(t.slots))}
         for t in tasks
     }
 
-    # busy_until[sid] = list של טווחים [(start, end), ...] שהחייל תפוס
-    # שמירה פשוטה: סט של שעות תפוסות
     busy_hours: dict[str, set] = {s.sid: set() for s in soldiers}
     busy_hours[DUMMY_SID] = set()
 
@@ -244,30 +262,19 @@ def greedy_schedule(soldiers: list, tasks: list, num_hours: int = 24):
     intensity_load: dict[str, int] = {s.sid: 0 for s in soldiers}
     intensity_load[DUMMY_SID]      = 0
 
-    # שעות שאויישו ע"י רפאים (= חוסר)
     dummy_slots = []
 
     def is_free(sid: str, shift_hours: list, overlap: bool) -> bool:
-        """
-        האם החייל פנוי לכל שעות המשמרת?
-        overlap=True → תמיד פנוי (מותר לחפוף)
-        """
         if overlap:
             return True
         return not any(h in busy_hours[sid] for h in shift_hours)
 
     def mark_busy(sid: str, shift_hours: list, rest: int, task_end_h: int):
-        """
-        מסמן את שעות המשמרת + שעות המנוחה כתפוסות.
-        תומך במעגליות (23→0→1...).
-        """
         for h in shift_hours:
             busy_hours[sid].add(h)
-        # מנוחה: rest שעות אחרי תום המשמרת
         for i in range(1, rest + 1):
             busy_hours[sid].add((task_end_h + i) % num_hours)
 
-    # מיין משימות: קודם הקשות / עם יותר תקנים
     sorted_tasks = sorted(tasks, key=lambda t: (-t.req, -t.intensity, -t.shift))
 
     for t in sorted_tasks:
@@ -275,38 +282,32 @@ def greedy_schedule(soldiers: list, tasks: list, num_hours: int = 24):
 
         for slot_idx in range(len(t.slots)):
             for start_h in shift_starts:
-                # שעות המשמרת הספציפית
                 shift_hours = [(start_h + i) % num_hours for i in range(t.shift)]
                 end_h       = shift_hours[-1]
 
-                # בנה מועמדים — חיילים אמיתיים קודם
-                real_candidates  = []
+                real_candidates = []
                 for s in soldiers:
                     if s.is_dummy:
                         continue
-                    if not s.can_assign(t, start_h):
+                    # תיקון: מעביר את shift_hours (לא start_h בלבד)
+                    if not s.can_assign(t, shift_hours):
                         continue
                     if not t.slot_ok(slot_idx, s):
                         continue
                     if not is_free(s.sid, shift_hours, t.overlap):
                         continue
-                    # ציון: פחות עומס = עדיפות גבוהה
                     score = work_hours[s.sid] * 10 + intensity_load[s.sid]
                     real_candidates.append((score, s.sid, s))
 
                 if real_candidates:
                     real_candidates.sort(key=lambda x: x[0])
-                    # בחר מתוך 3 הטובים (גיוון קל)
                     top = real_candidates[:3]
-                    # בחירה דטרמיניסטית — הכי פחות עמוס (ללא random לדטרמיניזם)
                     _, chosen_sid, chosen_s = top[0]
                     chosen_is_dummy = False
                 else:
-                    # אין מועמד → שבץ רפאים
                     chosen_sid      = DUMMY_SID
                     chosen_is_dummy = True
 
-                # שיבוץ לכל שעות המשמרת
                 for h in shift_hours:
                     schedule[t.tid][slot_idx][h] = chosen_sid
 
@@ -367,7 +368,7 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
                 if schedule[t.tid][slot_idx][h] == DUMMY_SID:
                     dummy_slots_h.append(t.name)
         dummy_row[hour_labels[h]] = "❌ " + " + ".join(dummy_slots_h) if dummy_slots_h else "—"
-    dummy_row["סך שעות"]          = sum(
+    dummy_row["סך שעות"] = sum(
         1 for h in range(num_hours)
         for t in tasks for si in range(len(t.slots))
         if schedule[t.tid][si][h] == DUMMY_SID
@@ -390,29 +391,19 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
 
 # ══════════════════════════════════════════════════════════════════
 # 6. שיפור CP-SAT (אופציונלי)
-#
-#  v14 — המנוע החכם שוחרר מכבלי הגריידי:
-#  ✅ dummy_vars — CP-SAT מחליט בעצמו מתי להשתמש ברפאים
-#  ✅ כיסוי גמיש: חייל אמיתי OR רפאים — לא כפוף להחלטות הגריידי
-#  ✅ PENALTY_DUMMY=100,000 — CP-SAT יעדיף לפגוע במנוחה על חוסר
-#  ✅ אילוץ מנוחה בין משמרות (soft — קנס 500)
-#  ✅ אילוץ שינה לילה (soft — קנס 200)
-#  ✅ הוגנות שעות (soft — קנס 100)
 # ══════════════════════════════════════════════════════════════════
 
 def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                        num_hours: int = 24, time_limit: float = 60.0):
     """
     מקבל schedule גריידי ומשפר הוגנות / מנוחה / שינה.
-    בניגוד לגרסה הקודמת — CP-SAT רשאי לתקן dummy slots של הגריידי
-    על ידי פגיעה מוגבלת במנוחה (קנס 500) במקום להשאיר חוסר (קנס 100,000).
+    CP-SAT עצמאי — רשאי לתקן dummy slots של הגריידי.
     אם CP-SAT נכשל לחלוטין — מחזיר את הגריידי ללא שינוי.
     """
     real_soldiers = [s for s in soldiers if not s.is_dummy]
     model         = cp_model.CpModel()
 
     # ── משתני החלטה ──────────────────────────────────────────────
-    # x[sid, tid, si, h] = 1 אם חייל sid משובץ למשמרת t בסלוט si בשעה h
     x = {}
     for s in real_soldiers:
         for t in tasks:
@@ -429,9 +420,7 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                     hint = 1 if schedule[t.tid][si][h] == s.sid else 0
                     model.AddHint(x[s.sid, t.tid, si, h], hint)
 
-    # ── משתני רפאים ל-CP-SAT ──────────────────────────────────────
-    # CP-SAT מחליט בעצמו מתי להשתמש ברפאים — לא כפוף לגריידי
-    # hints: אם הגריידי שיבץ dummy → hint=1, אחרת hint=0
+    # ── משתני רפאים ──────────────────────────────────────────────
     dummy_vars = {}
     for t in tasks:
         for si in range(len(t.slots)):
@@ -439,12 +428,9 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                 if h in t.hours:
                     dv = model.NewBoolVar(f"dummy_{t.tid}_{si}_{h}")
                     dummy_vars[t.tid, si, h] = dv
-                    # hint: אם הגריידי שיבץ dummy כאן, סביר שצריך dummy
                     model.AddHint(dv, 1 if schedule[t.tid][si][h] == DUMMY_SID else 0)
 
     # ── אילוץ כיסוי גמיש ──────────────────────────────────────────
-    # כל עמדה פעילה: בדיוק חייל אמיתי אחד OR רפאים (לא שניהם)
-    # CP-SAT יעדיף חייל אמיתי בגלל הקנס הכבד על dummy
     for t in tasks:
         for si in range(len(t.slots)):
             for h in range(num_hours):
@@ -454,25 +440,21 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                         + dummy_vars[t.tid, si, h] == 1
                     )
                 else:
-                    # שעה לא פעילה — אף אחד לא משובץ
                     for s in real_soldiers:
                         model.Add(x[s.sid, t.tid, si, h] == 0)
 
     # ── אילוצי כשירות ────────────────────────────────────────────
     for s in real_soldiers:
         for t in tasks:
-            # פטור מלא ממשימה
             if t.tid in s.exempt or any(r in t.block_roles for r in s.roles):
                 for si in range(len(t.slots)):
                     for h in range(num_hours):
                         model.Add(x[s.sid, t.tid, si, h] == 0)
                 continue
-            # הסמכה לפי סלוט
             for si, req_role in enumerate(t.slots):
                 if req_role and req_role not in s.roles:
                     for h in range(num_hours):
                         model.Add(x[s.sid, t.tid, si, h] == 0)
-        # שעות חסימה אישיות
         for h in s.blocked_hours:
             for t in tasks:
                 for si in range(len(t.slots)):
@@ -489,27 +471,20 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
             if non_overlap_vars:
                 model.Add(sum(non_overlap_vars) <= 1)
 
-    # ── פונקציית מטרה: מדרג קנסות ────────────────────────────────
-    # סדר עדיפויות (גבוה → נמוך):
-    #   1. חוסר איוש (dummy)  — 100,000 / שעה
-    #   2. חריגת מנוחה        —     500 / שעה
-    #   3. פגיעה בשינה לילה   —     200 / שעה מעל 4
-    #   4. אי-הוגנות שעות     —     100 / שעת פער
-    PENALTY_DUMMY     = 100_000
-    PENALTY_REST      =     500
-    PENALTY_NIGHT     =     200
-    PENALTY_FAIRNESS  =     100
+    # ── פונקציית מטרה ────────────────────────────────────────────
+    PENALTY_DUMMY    = 100_000
+    PENALTY_REST     =     500
+    PENALTY_NIGHT    =     200
+    PENALTY_FAIRNESS =     100
 
     penalties = []
 
-    # קנס dummy — CP-SAT ישלם הכל כדי להימנע מחוסר
     for t in tasks:
         for si in range(len(t.slots)):
             for h in range(num_hours):
                 if h in t.hours:
                     penalties.append(dummy_vars[t.tid, si, h] * PENALTY_DUMMY)
 
-    # הוגנות שעות
     total_hours_vars = []
     for s in real_soldiers:
         th = model.NewIntVar(0, num_hours * len(tasks), f'th_{s.sid}')
@@ -527,17 +502,12 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
     model.Add(diff == max_h - min_h)
     penalties.append(diff * PENALTY_FAIRNESS)
 
-    # שמירת מנוחה: קנס רק אם החייל גם עשה את המשמרת וגם עובד בשעת המנוחה שלה
-    # תוקן v14:
-    #   1. משתנה worked לא שימש בכלל — תוקן ל-is_working_shift
-    #   2. if rest_work: תמיד True (Linear Expression אינו 0) — תוקן ל-BoolVar מפורש
     for s in real_soldiers:
         for t in tasks:
             if t.overlap or t.rest == 0:
                 continue
             shift_starts = t.get_shift_starts()
             for start_h in shift_starts:
-                # האם החייל ביצע את המשמרת הזו? (באחד מהסלוטים)
                 worked_in_shift = sum(
                     x[s.sid, t.tid, si, start_h] for si in range(len(t.slots))
                 )
@@ -551,7 +521,6 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                 for r in range(1, t.rest + 1):
                     rest_h = (end_h + r) % num_hours
 
-                    # האם החייל עובד בשעת המנוחה?
                     rest_work = sum(
                         x[s.sid, t2.tid, si2, rest_h]
                         for t2 in tasks if not t2.overlap
@@ -562,7 +531,6 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                     model.Add(rest_work >= 1).OnlyEnforceIf(is_working_in_rest)
                     model.Add(rest_work == 0).OnlyEnforceIf(is_working_in_rest.Not())
 
-                    # קנס רק אם גם עשה משמרת וגם עובד במנוחה (AND של שניהם)
                     viol = model.NewBoolVar(
                         f'rest_viol_{s.sid}_{t.tid}_{start_h}_{r}')
                     model.AddBoolAnd(
@@ -573,7 +541,6 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                     ).OnlyEnforceIf(viol.Not())
                     penalties.append(viol * PENALTY_REST)
 
-    # הגנת שינה לילה (22:00–08:00): קנס על כל שעה מעל 4 שעות לילה
     NIGHT_HOURS = list(set(range(22, 24)) | set(range(0, 9)))
     NIGHT_LIMIT = 4
     for s in real_soldiers:
@@ -591,25 +558,21 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
             model.Add(night_excess >= 0)
             penalties.append(night_excess * PENALTY_NIGHT)
 
-    # מינימיזציה
-    # גבול עליון: 24h * כל הסלוטים * PENALTY_DUMMY + קנסות קטנים
     max_penalty = 24 * sum(len(t.slots) for t in tasks) * PENALTY_DUMMY + 500_000
     total_penalty = model.NewIntVar(0, max_penalty, 'total_penalty')
     model.Add(total_penalty == sum(penalties))
     model.Minimize(total_penalty)
 
-    # ── פתרון ────────────────────────────────────────────────────
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds  = time_limit
     solver.parameters.num_search_workers   = 6
     solver.parameters.log_search_progress  = False
-    solver.parameters.relative_gap_limit   = 0.05  # 5% מהאופטימום — מספיק טוב
+    solver.parameters.relative_gap_limit   = 0.05
     status = solver.Solve(model)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return schedule  # fallback לגריידי
 
-    # ── בנה schedule מעודכן ───────────────────────────────────────
     new_schedule = {
         t.tid: {si: {h: None for h in range(num_hours)} for si in range(len(t.slots))}
         for t in tasks
@@ -618,12 +581,10 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
         for si in range(len(t.slots)):
             for h in range(num_hours):
                 if h not in t.hours:
-                    continue  # שעה לא פעילה — None
-                # CP-SAT החליט להשתמש ברפאים?
+                    continue
                 if solver.Value(dummy_vars[t.tid, si, h]) == 1:
                     new_schedule[t.tid][si][h] = DUMMY_SID
                 else:
-                    # חפש מי שובץ
                     assigned = None
                     for s in real_soldiers:
                         if solver.Value(x[s.sid, t.tid, si, h]) == 1:
@@ -639,8 +600,8 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="app-header">
-  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v14)</h1>
-  <p>גריידי מהיר + CP-SAT חכם ועצמאי · מעדיף פגיעה במנוחה על חוסר · תמיד מחזיר לוח מלא</p>
+  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v15)</h1>
+  <p>גריידי מהיר + CP-SAT חכם ועצמאי · תומך HH:MM · חיילים לא נחסמים לשווא · תמיד מחזיר לוח מלא</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -673,18 +634,18 @@ with tab_templates:
         st.dataframe(s_ex, use_container_width=True, hide_index=True)
         st.download_button("⬇️ הורד תבנית חיילים",
                            data=to_excel_styled(s_ex, "Soldiers", False),
-                           file_name="Soldiers_v14.xlsx", use_container_width=True)
+                           file_name="Soldiers_v15.xlsx", use_container_width=True)
     with c2:
         st.markdown("**📋 תבנית משימות**")
         st.dataframe(t_ex, use_container_width=True, hide_index=True)
         st.download_button("⬇️ הורד תבנית משימות",
                            data=to_excel_styled(t_ex, "Tasks", False),
-                           file_name="Tasks_v14.xlsx", use_container_width=True)
+                           file_name="Tasks_v15.xlsx", use_container_width=True)
 
 # ── מדריך ───────────────────────────────────────────────────────
 with tab_guide:
     st.markdown("""
-### 📖 מדריך v14
+### 📖 מדריך v15
 
 #### קובץ חיילים
 | עמודה | הסבר | דוגמה |
@@ -693,7 +654,7 @@ with tab_guide:
 | שם מלא | שם להצגה | ישראל ישראלי |
 | פטורים | מס"ד משימות חסומות | 101,103 |
 | הסמכות | תפקידים (אם יש) | נהג,מפקד |
-| שעות חסימה | שעות לא זמין | 10-14 / 22-6 |
+| שעות חסימה | שעות לא זמין | 10-14 / 22-6 / 08:30-16:00 |
 
 #### קובץ משימות
 | עמודה | הסבר | דוגמה |
@@ -711,12 +672,11 @@ with tab_guide:
 """)
     st.markdown("""
 <div class="info-box">
-<b>💡 v14 — שינויים עיקריים:</b><br>
-<b>✅ CP-SAT עצמאי:</b> המנוע החכם כבר לא כבול להחלטות הגריידי. אם הגריידי שיבץ "חוסר" — CP-SAT ינסה לתקן עם חייל אמיתי.<br>
-<b>✅ מדרג קנסות נכון:</b> חוסר איוש (100,000) >> חריגת מנוחה (500) >> פגיעה בשינה (200) >> אי-הוגנות (100).<br>
-<b>✅ dummy_vars:</b> CP-SAT מחליט בעצמו מתי ומאין להשתמש ברפאים — לא מקבל את זה "מוכן" מהגריידי.<br>
-<b>✅ כיסוי גמיש:</b> כל עמדה = חייל אמיתי OR רפאים, לא "נעולה" כפי שהגריידי החליט.<br>
-<b>✅ גבול עליון דינמי:</b> total_penalty מחושב לפי גודל הבעיה — לא מספר קשיח.
+<b>💡 v15 — שינויים עיקריים:</b><br>
+<b>✅ תיקון חסימת חיילים:</b> תא ריק בעמודת "שעות חסימה" לא מתורגם יותר ל-24 שעות — החייל פשוט לא חסום בכלל.<br>
+<b>✅ בדיקת משמרת שלמה:</b> <code>can_assign</code> בודק את כל שעות המשמרת, לא רק את שעת ההתחלה.<br>
+<b>✅ תמיכה ב-HH:MM:</b> שעות בפורמט <code>08:30</code> נקראות נכון (חולץ רק החלק של השעה).<br>
+<b>✅ CP-SAT עצמאי:</b> מנוע האופטימיזציה ממשיך לפעול באופן עצמאי לשיפור הוגנות ומנוחה.
 </div>
 """, unsafe_allow_html=True)
 
@@ -738,7 +698,7 @@ with tab_run:
             unsafe_allow_html=True)
 
     if sf and tf:
-        if st.button('⚙️ צור שבצ"ק חכם (v14)', use_container_width=True, key="run_btn"):
+        if st.button('⚙️ צור שבצ"ק חכם (v15)', use_container_width=True, key="run_btn"):
             try:
                 # ── קריאת קבצים ──────────────────────────────────
                 s_df = pd.read_excel(sf)
@@ -768,8 +728,7 @@ with tab_run:
                 t_df = t_df.dropna(subset=[t_id_col, t_nm_col, t_req_col])
 
                 def gcol(df, keys):
-                    c = find_col(df, keys)
-                    return c
+                    return find_col(df, keys)
 
                 shift_col   = gcol(t_df, ['משך'])
                 rest_col    = gcol(t_df, ['מנוחה'])
@@ -788,7 +747,6 @@ with tab_run:
                             r.get('שעות חסימה', ''))
                     for _, r in s_df.iterrows()
                 ]
-                # הוסף חייל רפאים
                 soldiers.append(Soldier(DUMMY_SID, "⚠️ חוסר", is_dummy=True))
 
                 tasks = [
@@ -820,9 +778,7 @@ with tab_run:
                         '<div class="info-box">🔧 CP-SAT הסתיים — שיפור הוגנות/מנוחה.</div>',
                         unsafe_allow_html=True)
 
-                # ── ספירת חוסרים סופית — רק אחרי CP-SAT! ──────────
-                # תוקן v14: הספירה הייתה לפני CP-SAT, כך שהממשק הציג
-                # אזהרת חוסר גם כשה-CP-SAT כבר תיקן את הכל.
+                # ── ספירת חוסרים סופית ────────────────────────────
                 dummy_hours_count = sum(
                     1 for t in tasks for si in range(len(t.slots))
                     for h in range(24) if schedule[t.tid][si][h] == DUMMY_SID
@@ -880,7 +836,7 @@ with tab_run:
                 st.table(final_df)
                 st.download_button("📥 הורד לוח שיבוץ (Excel)",
                                    data=to_excel_styled(final_df),
-                                   file_name="Final_Shavtzak_v14.xlsx",
+                                   file_name="Final_Shavtzak_v15.xlsx",
                                    use_container_width=True)
 
                 # ── גרף ──────────────────────────────────────────

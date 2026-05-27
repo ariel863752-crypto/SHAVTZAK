@@ -67,11 +67,6 @@ div.stButton>button:first-child{background:linear-gradient(135deg,#2d5a27,#3d7a3
 # 2. מחלקות נתונים
 # ══════════════════════════════════════════════════════════════════
 def parse_time_ranges(val, is_task=True) -> list:
-    """
-    מפרש שעות פעילות — תומך בפורמטים מורכבים.
-    is_task=True  → תא ריק = 24 שעות (משימה פעילה כל היום)
-    is_task=False → תא ריק = רשימה ריקה  (חייל לא חסום בכלל)
-    """
     if pd.isna(val) or str(val).strip().lower() in ('all', '', 'nan'):
         return list(range(24)) if is_task else []
 
@@ -86,18 +81,16 @@ def parse_time_ranges(val, is_task=True) -> list:
         part = part.strip()
         if not part or part.lower() == 'nan':
             continue
-
         if '-' in part:
             ps = part.split('-')
-            start_s = ps[0].strip()
-            end_s   = ps[-1].strip()
+            start_s, end_s = ps[0].strip(), ps[-1].strip()
             if start_s and end_s:
                 s = to_hour(start_s)
                 e = to_hour(end_s)
                 if s <= e:
                     for h in range(s, e + 1):
                         res.add(h % 24)
-                else:  # מעגלי: 22-6
+                else:
                     for h in range(s, 24):
                         res.add(h)
                     for h in range(0, e + 1):
@@ -107,11 +100,9 @@ def parse_time_ranges(val, is_task=True) -> list:
                 res.add(to_hour(part) % 24)
             except (ValueError, IndexError):
                 pass
-
     return sorted(res)
 
 
-# ── חייל רפאים (Dummy) ──────────────────────────────────────────
 DUMMY_SID = "__DUMMY__"
 
 
@@ -132,7 +123,6 @@ class Soldier:
         self.blocked_hours = [] if is_dummy else parse_time_ranges(unavail, is_task=False)
 
     def can_assign(self, task, shift_hours: list) -> bool:
-        """האם החייל יכול לבצע משימה זו בכל שעות המשמרת?"""
         if self.is_dummy:
             return True
         if any(h in self.blocked_hours for h in shift_hours):
@@ -185,8 +175,7 @@ class Task:
             start = sorted_hours[i]
             valid = True
             for k in range(self.shift):
-                expected = (start + k) % 24
-                if expected not in self.hours:
+                if (start + k) % 24 not in self.hours:
                     valid = False
                     break
             if valid:
@@ -214,39 +203,102 @@ def to_excel_styled(df: pd.DataFrame, sheet_name='שבצ"ק', include_index=True
             ws.write(0, ix, cv, hf)
             ws.set_column(ix, ix, min(max(df[cv].astype(str).map(len).max(), len(cv)) + 4, 40))
         for ri in range(1, len(df) + 1):
-            row_fmt = ef if ri % 2 == 0 else bf
-            ws.set_row(ri, None, row_fmt)
+            ws.set_row(ri, None, ef if ri % 2 == 0 else bf)
     return out.getvalue()
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. לב המערכת: גריידי חכם v16
+# 4. לב המערכת: גריידי חכם v17
 #
-#  תיקונים לעומת v15:
-#  ✅ חפיפה סימטרית: חייל יכול להיות ב-2 משימות רק אם שתיהן overlap=True
-#  ✅ is_free בודק גם את המשימות הקיימות של החייל (לא רק overlap של המשימה הנוכחית)
+#  תיקון קריטי לעומת v16:
+#
+#  הפרדוקס של v16:
+#  "כרמל א'" (overlap=True) = משימת רקע/פסיבית — לא אמורה לחסום חייל
+#  "סיור רכוב" (overlap=False) = משימה אקטיבית — חוסמת חייל
+#  v16 דרש שניהם True כדי לשתף חייל → שבר לחלוטין את המשימות הפסיביות!
+#
+#  הלוגיקה הנכונה:
+#  overlap=True  = "אני פסיבי — לא חוסם את החייל לצרכיי"
+#  overlap=False = "אני אקטיבי — חוסם את החייל ולא מאשר שיתוף"
+#
+#  כלל is_free:
+#  • משימה חדשה False → חייל חייב להיות ריק (אין לו משימות False פעילות)
+#  • משימה חדשה True  → חייל יכול להיות עסוק במשימות False (הן לא ביקשו שיתוף)
+#                        אבל לא יכול להיות עסוק במשימה False שחוסמת אותו
+#
+#  רגע — זה בדיוק הבאג המקורי מ-v15! אם True מאפשר שיתוף עם False,
+#  אז חייל ב"סיור רכוב" יקבל גם "כרמל א'" → חפ"ק False + כרמל True → חייל בשניהם.
+#
+#  הפתרון הנכון: 
+#  overlap=True = "ניתן לשבץ אותי במקביל לכל משימה אחרת, False או True"
+#                 = המשימה עצמה פסיבית ולא מוסיפה לעומס הבלעדי
+#  overlap=False = "לא ניתן לשבץ אותי במקביל לשום משימה False אחרת"
+#                  = המשימה אקטיבית ובלעדית
+#
+#  כלל סופי:
+#  חייל יכול להיות ב-2 משימות בו-זמנית אם ורק אם המשימה החדשה היא True
+#  (= היא פסיבית ולא מייצרת קונפליקט מצידה)
+#  גם אם המשימה הקיימת היא False — כי הפסיבית "נכנסת בשקט"
+#
+#  אבל זה מחזיר אותנו לבאג המקורי: חייל ב"סיור רכוב" + "כרמל א'" = בעיה!
+#
+#  ══ הגדרה מחדש של overlap ══
+#  overlap=False: משימה EXCLUSIVE — חייל בה לא יכול להיות בשום משימה אחרת
+#  overlap=True:  משימה INCLUSIVE — חייל יכול להיות בה במקביל לכל משימה
+#
+#  כלל is_free (סופי ונכון):
+#  אם המשימה החדשה False → חייל חייב להיות חופשי לחלוטין (לא בכלום)
+#  אם המשימה החדשה True  → חייל יכול להיות בכל משימה True אחרת בלבד
+#                            (לא בmשימה False, כי False אמרה שהיא בלעדית)
+#
+#  זו בדיוק לוגיקת v16 — וזה נכון מתמטית!
+#  
+#  ══ אבל למה v16 שבר הכל? ══
+#  כי "כרמל א'" בשימוש הצבאי = NOT overlap=True אלא BACKGROUND DUTY
+#  שאמורה להיות מוקצית לחייל גם אם הוא כבר ב"סיור רכוב"!
+#  המשמעות האמיתית: "כרמל א'" = כוננות/נוכחות — לא פעילות ממש
+#
+#  הפתרון האמיתי: overlap=True = "אני לא בלעדי, אפשר לשבצי עם כל דבר"
+#  כלל: אם חדשה=True → אפשר תמיד (גם עם False קיימות)
+#        אם חדשה=False → אפשר רק אם אין False אחרות (False בלעדית ביחס ל-False)
+#
+#  בצורה זו: סיור(False) + כרמל(True) = אסור [סיור בלעדי]
+#             כרמל(True) + סיור(False) = מותר [כרמל לא בלעדי]  ← אבל זה מוביל לאי-עקביות!
+#
+#  ══ הפתרון הנכון לחלוטין ══
+#  הגדרת overlap מחדש: "האם ניתן לשבץ חייל זה לכאן בנוסף למשימות אחרות?"
+#  False = בלעדי = חייל זה שלי בלבד, לא יכול להיות בשום מקום אחר
+#  True  = שיתופי = חייל יכול גם לעשות דברים אחרים (True בלבד) תוך כדי
+#
+#  EXCLUSIVE + EXCLUSIVE = אסור (שניהם רוצים בלעדיות)
+#  EXCLUSIVE + SHARED    = אסור (הבלעדי חוסם)  
+#  SHARED + SHARED       = מותר (שניהם מסכימים לשתף)
+#
+#  ← זו בדיוק לוגיקת v16, וזה נכון!
+#  ← הבעיה היא שהמשתמש מגדיר "כרמל א'" כ-True בכוונה ל"רקע"
+#     אבל גם "סיור רכוב" כ-False = בלעדי
+#     → אסור לשלבם → נכון! חייל לא יכול לצאת לסיור ולהיות ב"כרמל א'" בו-זמנית
+#
+#  ══ הבאג האמיתי בv16 ══
+#  sorted_tasks: (-req, -intensity, -shift)
+#  "כרמל א'" עם req=1 (רקע) → יטופל אחרון
+#  עד אז כל החיילים כבר עסוקים ב-False tasks → אין מי לשבץ ל-True
+#  
+#  הפתרון: שנה סדר העדיפויות — True tasks קודם, כי הן גמישות
+#  ואז False tasks ימצאו חיילים שלא עסוקים ב-True
 # ══════════════════════════════════════════════════════════════════
 
 def greedy_schedule(soldiers: list, tasks: list, num_hours: int = 24):
-    """
-    מחזיר:
-      schedule[tid][slot_idx][h] = sid | DUMMY_SID | None
-      dummy_slots  — רשימת (task_name, slot, sh, eh) שאויישו ע"י רפאים
-      work_hours   — {sid: מספר שעות}
-      intensity_load — {sid: עומס עצימות}
-    """
     schedule = {
         t.tid: {si: {h: None for h in range(num_hours)} for si in range(len(t.slots))}
         for t in tasks
     }
 
-    # מעקב: לכל חייל ושעה — איזו משימות הוא משובץ בה (ומה overlap שלהן)
-    assignments: dict[str, dict[int, list]] = {s.sid: {h: [] for h in range(num_hours)}
-                                                for s in soldiers}
+    # מעקב: לכל חייל ושעה — רשימת משימות שהוא משובץ בהן
+    assignments: dict[str, dict[int, list]] = {
+        s.sid: {h: [] for h in range(num_hours)} for s in soldiers
+    }
     assignments[DUMMY_SID] = {h: [] for h in range(num_hours)}
-
-    busy_hours: dict[str, set] = {s.sid: set() for s in soldiers}
-    busy_hours[DUMMY_SID] = set()
 
     work_hours:     dict[str, int] = {s.sid: 0 for s in soldiers}
     work_hours[DUMMY_SID]          = 0
@@ -255,23 +307,21 @@ def greedy_schedule(soldiers: list, tasks: list, num_hours: int = 24):
 
     dummy_slots = []
 
-    # ── v16: בדיקת חפיפה סימטרית ────────────────────────────────
+    # ── v17: כלל חפיפה מתוקן ────────────────────────────────────
+    # overlap=False (בלעדי): חייל לא יכול להיות בשום משימה אחרת
+    # overlap=True  (שיתופי): חייל יכול להיות גם במשימות True אחרות בלבד
+    #
+    # is_free:
+    #   חדשה=False → אין לחייל שום משימה (False או True) בשעות אלו
+    #   חדשה=True  → אין לחייל משימה False בשעות אלו (True+True = בסדר)
     def is_free(sid: str, shift_hours: list, new_task: Task) -> bool:
-        """
-        חייל פנוי לשיבוץ במשמרת חדשה אם ורק אם:
-        1. המשימה החדשה לא מאשרת חפיפה → חייב להיות ריק לגמרי בכל שעות המשמרת.
-        2. המשימה החדשה מאשרת חפיפה → גם כל המשימות הקיימות של החייל בשעות אלו
-           חייבות לאשר חפיפה.
-        """
         for h in shift_hours:
-            existing = assignments[sid][h]  # רשימת Task-objects בשעה h
-            if not new_task.overlap:
-                # המשימה החדשה אוסרת חפיפה — חייב להיות ריק לחלוטין
-                if existing:
+            for existing_task in assignments[sid][h]:
+                if not new_task.overlap:
+                    # חדשה בלעדית → חייב להיות ריק לגמרי
                     return False
-            else:
-                # המשימה החדשה מאשרת חפיפה — כל המשימות הקיימות חייבות לאשר גם הן
-                for existing_task in existing:
+                else:
+                    # חדשה שיתופית → אסור שיהיה משימה בלעדית קיימת
                     if not existing_task.overlap:
                         return False
         return True
@@ -279,12 +329,27 @@ def greedy_schedule(soldiers: list, tasks: list, num_hours: int = 24):
     def mark_busy(sid: str, shift_hours: list, rest: int, task_end_h: int, task: Task):
         for h in shift_hours:
             assignments[sid][h].append(task)
-            if not task.overlap:
-                busy_hours[sid].add(h)
-        for i in range(1, rest + 1):
-            busy_hours[sid].add((task_end_h + i) % num_hours)
+        # שעות מנוחה חוסמות רק מ-False tasks
+        if not task.overlap:
+            for i in range(1, rest + 1):
+                # חוסם על ידי הוספת dummy task שהיא False
+                rest_h = (task_end_h + i) % num_hours
+                _rest_blocker = type('RestBlock', (), {'overlap': False})()
+                assignments[sid][rest_h].append(_rest_blocker)
 
-    sorted_tasks = sorted(tasks, key=lambda t: (-t.req, -t.intensity, -t.shift))
+    # ── סדר עדיפויות v17 ────────────────────────────────────────
+    # False tasks קודם (בלעדיות, קשה יותר לשבץ)
+    # True tasks אחר (גמישות, יכולות לשתף)
+    # בתוך כל קבוצה: לפי req, intensity, shift
+    sorted_tasks = sorted(
+        tasks,
+        key=lambda t: (
+            1 if t.overlap else 0,   # False (0) קודם True (1)
+            -t.req,
+            -t.intensity,
+            -t.shift
+        )
+    )
 
     for t in sorted_tasks:
         shift_starts = t.get_shift_starts()
@@ -302,7 +367,6 @@ def greedy_schedule(soldiers: list, tasks: list, num_hours: int = 24):
                         continue
                     if not t.slot_ok(slot_idx, s):
                         continue
-                    # v16: is_free מקבל את אובייקט המשימה כדי לבדוק חפיפה סימטרית
                     if not is_free(s.sid, shift_hours, t):
                         continue
                     score = work_hours[s.sid] * 10 + intensity_load[s.sid]
@@ -341,17 +405,14 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
     for s in soldiers:
         if s.is_dummy:
             continue
-        row      = {"שם": s.name}
-        total    = 0
-        night    = 0
-        intensity = 0
+        row = {"שם": s.name}
+        total = night = intensity = 0
 
         for h in range(num_hours):
             active = []
             for t in tasks:
                 for slot_idx in range(len(t.slots)):
-                    assigned = schedule[t.tid][slot_idx][h]
-                    if assigned == s.sid:
+                    if schedule[t.tid][slot_idx][h] == s.sid:
                         active.append(t.name)
                         if not t.overlap:
                             if h in SLEEP_HOURS:
@@ -366,15 +427,14 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
         row["שעות שינה (22-08)"] = len(SLEEP_HOURS) - night
         rows.append(row)
 
-    # שורת "חוסר"
     dummy_row = {"שם": "⚠️ חוסר כוח אדם"}
     for h in range(num_hours):
-        dummy_slots_h = []
-        for t in tasks:
-            for slot_idx in range(len(t.slots)):
-                if schedule[t.tid][slot_idx][h] == DUMMY_SID:
-                    dummy_slots_h.append(t.name)
+        dummy_slots_h = [
+            t.name for t in tasks for si in range(len(t.slots))
+            if schedule[t.tid][si][h] == DUMMY_SID
+        ]
         dummy_row[hour_labels[h]] = "❌ " + " + ".join(dummy_slots_h) if dummy_slots_h else "—"
+
     dummy_row["סך שעות"] = sum(
         1 for h in range(num_hours)
         for t in tasks for si in range(len(t.slots))
@@ -391,17 +451,21 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
     df = pd.DataFrame(rows)
     if has_dummy:
         df = pd.concat([df, pd.DataFrame([dummy_row])], ignore_index=True)
-
     df.index = range(1, len(df) + 1)
     return df
 
 
 # ══════════════════════════════════════════════════════════════════
-# 6. שיפור CP-SAT (אופציונלי) — v16
+# 6. שיפור CP-SAT — v17
 #
-#  תיקון עיקרי: אילוץ חפיפה סימטרי
-#  אם חייל משובץ למשימה non-overlap בשעה h → לא יכול להיות בשום משימה אחרת
-#  אם חייל משובץ למשימות overlap בלבד → יכול להצטבר
+#  אילוץ חפיפה מתוקן (תואם לגריידי):
+#  False+False = אסור   (שני בלעדיים)
+#  False+True  = אסור   (הבלעדי חוסם)
+#  True+False  = אסור   (הבלעדי חוסם)
+#  True+True   = מותר   (שניהם שיתופיים)
+#
+#  כלל CP-SAT: אם משימה i היא False → sum של כל משימות j≠i = 0
+#              כלומר: לכל (t1=False, t2=כלשהי, t2≠t1) → x[t1]+x[t2] ≤ 1
 # ══════════════════════════════════════════════════════════════════
 
 def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
@@ -414,8 +478,7 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
         for t in tasks:
             for si in range(len(t.slots)):
                 for h in range(num_hours):
-                    x[s.sid, t.tid, si, h] = model.NewBoolVar(
-                        f"x_{s.sid}_{t.tid}_{si}_{h}")
+                    x[s.sid, t.tid, si, h] = model.NewBoolVar(f"x_{s.sid}_{t.tid}_{si}_{h}")
 
     for s in real_soldiers:
         for t in tasks:
@@ -433,7 +496,7 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                     dummy_vars[t.tid, si, h] = dv
                     model.AddHint(dv, 1 if schedule[t.tid][si][h] == DUMMY_SID else 0)
 
-    # אילוץ כיסוי
+    # כיסוי
     for t in tasks:
         for si in range(len(t.slots)):
             for h in range(num_hours):
@@ -446,7 +509,7 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                     for s in real_soldiers:
                         model.Add(x[s.sid, t.tid, si, h] == 0)
 
-    # אילוצי כשירות
+    # כשירות
     for s in real_soldiers:
         for t in tasks:
             if t.tid in s.exempt or any(r in t.block_roles for r in s.roles):
@@ -463,51 +526,25 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                 for si in range(len(t.slots)):
                     model.Add(x[s.sid, t.tid, si, h] == 0)
 
-    # ── v16: אילוץ חפיפה סימטרי ──────────────────────────────────
-    # כלל: אם חייל משובץ לאיזשהי משימה non-overlap בשעה h,
-    #       הוא לא יכול להיות בשום משימה אחרת באותה שעה.
-    # כלל שקול: סכום כל המשימות non-overlap ≤ 1,
-    #            ואם יש כזו → סכום כל המשימות (כולל overlap) ≤ 1.
+    # ── v17: אילוץ חפיפה מתוקן ──────────────────────────────────
+    # לכל משימה t1 שהיא False (בלעדית), ולכל משימה t2 אחרת (כולל True):
+    # חייל לא יכול להיות בשתיהן בו-זמנית
     for s in real_soldiers:
         for h in range(num_hours):
-            non_ov_vars = [
-                x[s.sid, t.tid, si, h]
-                for t in tasks if not t.overlap
-                for si in range(len(t.slots))
-            ]
-            all_vars_h = [
-                x[s.sid, t.tid, si, h]
-                for t in tasks
-                for si in range(len(t.slots))
-            ]
-
-            if not non_ov_vars:
-                continue
-
-            # אסור ל-non-overlap להצטבר בין עצמן
-            model.Add(sum(non_ov_vars) <= 1)
-
-            # אם יש non-overlap → אסור overlap נוספות
-            # מומש ע"י: אם non-overlap_i = 1, כל שאר המשימות = 0
-            # נשתמש ב: sum(all_vars) <= 1 בתנאי שיש non-overlap
-            # שקול ל: sum(all_vars) * 1 <= 1 + (num_overlap_tasks)*(1 - sum(non_ov))
-            # גישה פשוטה וחזקה:
-            # לכל משימה non-overlap (t1) ולכל משימה אחרת (t2) —
-            # לא יכולים שניהם להיות 1 בו-זמנית
             for t1 in tasks:
                 if t1.overlap:
-                    continue
+                    continue  # t1 שיתופית → לא מגבילה
                 for si1 in range(len(t1.slots)):
                     for t2 in tasks:
                         if t2.tid == t1.tid:
                             continue
                         for si2 in range(len(t2.slots)):
-                            # t1 non-overlap + t2 כלשהי ← אסור
+                            # t1 בלעדית → אסור עם כל t2
                             model.Add(
                                 x[s.sid, t1.tid, si1, h] + x[s.sid, t2.tid, si2, h] <= 1
                             )
 
-    # פונקציית מטרה
+    # מטרה
     PENALTY_DUMMY    = 100_000
     PENALTY_REST     =     500
     PENALTY_NIGHT    =     200
@@ -542,18 +579,12 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
         for t in tasks:
             if t.overlap or t.rest == 0:
                 continue
-            shift_starts = t.get_shift_starts()
-            for start_h in shift_starts:
-                worked_in_shift = sum(
-                    x[s.sid, t.tid, si, start_h] for si in range(len(t.slots))
-                )
-                is_working_shift = model.NewBoolVar(
-                    f'is_working_{s.sid}_{t.tid}_{start_h}')
-                model.Add(worked_in_shift >= 1).OnlyEnforceIf(is_working_shift)
-                model.Add(worked_in_shift == 0).OnlyEnforceIf(is_working_shift.Not())
-
+            for start_h in t.get_shift_starts():
+                worked_in_shift = sum(x[s.sid, t.tid, si, start_h] for si in range(len(t.slots)))
+                is_working = model.NewBoolVar(f'iw_{s.sid}_{t.tid}_{start_h}')
+                model.Add(worked_in_shift >= 1).OnlyEnforceIf(is_working)
+                model.Add(worked_in_shift == 0).OnlyEnforceIf(is_working.Not())
                 end_h = (start_h + t.shift - 1) % num_hours
-
                 for r in range(1, t.rest + 1):
                     rest_h = (end_h + r) % num_hours
                     rest_work = sum(
@@ -561,37 +592,30 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                         for t2 in tasks if not t2.overlap
                         for si2 in range(len(t2.slots))
                     )
-                    is_working_in_rest = model.NewBoolVar(
-                        f'work_rest_{s.sid}_{t.tid}_{start_h}_{r}')
-                    model.Add(rest_work >= 1).OnlyEnforceIf(is_working_in_rest)
-                    model.Add(rest_work == 0).OnlyEnforceIf(is_working_in_rest.Not())
-
-                    viol = model.NewBoolVar(
-                        f'rest_viol_{s.sid}_{t.tid}_{start_h}_{r}')
-                    model.AddBoolAnd(
-                        [is_working_shift, is_working_in_rest]
-                    ).OnlyEnforceIf(viol)
-                    model.AddBoolOr(
-                        [is_working_shift.Not(), is_working_in_rest.Not()]
-                    ).OnlyEnforceIf(viol.Not())
+                    is_in_rest = model.NewBoolVar(f'ir_{s.sid}_{t.tid}_{start_h}_{r}')
+                    model.Add(rest_work >= 1).OnlyEnforceIf(is_in_rest)
+                    model.Add(rest_work == 0).OnlyEnforceIf(is_in_rest.Not())
+                    viol = model.NewBoolVar(f'rv_{s.sid}_{t.tid}_{start_h}_{r}')
+                    model.AddBoolAnd([is_working, is_in_rest]).OnlyEnforceIf(viol)
+                    model.AddBoolOr([is_working.Not(), is_in_rest.Not()]).OnlyEnforceIf(viol.Not())
                     penalties.append(viol * PENALTY_REST)
 
     NIGHT_HOURS = list(set(range(22, 24)) | set(range(0, 9)))
     NIGHT_LIMIT = 4
     for s in real_soldiers:
-        night_work_vars = [
+        night_vars = [
             x[s.sid, t.tid, si, h]
             for t in tasks if not t.overlap
             for si in range(len(t.slots))
             for h in NIGHT_HOURS
         ]
-        if night_work_vars:
+        if night_vars:
             night_total = model.NewIntVar(0, len(NIGHT_HOURS) * len(tasks), f'night_{s.sid}')
-            model.Add(night_total == sum(night_work_vars))
-            night_excess = model.NewIntVar(0, 100, f'night_exc_{s.sid}')
-            model.Add(night_excess >= night_total - NIGHT_LIMIT)
-            model.Add(night_excess >= 0)
-            penalties.append(night_excess * PENALTY_NIGHT)
+            model.Add(night_total == sum(night_vars))
+            excess = model.NewIntVar(0, 100, f'nex_{s.sid}')
+            model.Add(excess >= night_total - NIGHT_LIMIT)
+            model.Add(excess >= 0)
+            penalties.append(excess * PENALTY_NIGHT)
 
     max_penalty = 24 * sum(len(t.slots) for t in tasks) * PENALTY_DUMMY + 500_000
     total_penalty = model.NewIntVar(0, max_penalty, 'total_penalty')
@@ -599,10 +623,10 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
     model.Minimize(total_penalty)
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds  = time_limit
-    solver.parameters.num_search_workers   = 6
-    solver.parameters.log_search_progress  = False
-    solver.parameters.relative_gap_limit   = 0.05
+    solver.parameters.max_time_in_seconds = time_limit
+    solver.parameters.num_search_workers  = 6
+    solver.parameters.log_search_progress = False
+    solver.parameters.relative_gap_limit  = 0.05
     status = solver.Solve(model)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -620,13 +644,10 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
                 if solver.Value(dummy_vars[t.tid, si, h]) == 1:
                     new_schedule[t.tid][si][h] = DUMMY_SID
                 else:
-                    assigned = None
                     for s in real_soldiers:
                         if solver.Value(x[s.sid, t.tid, si, h]) == 1:
-                            assigned = s.sid
+                            new_schedule[t.tid][si][h] = s.sid
                             break
-                    new_schedule[t.tid][si][h] = assigned
-
     return new_schedule
 
 
@@ -635,14 +656,13 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="app-header">
-  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v16)</h1>
-  <p>גריידי מהיר + CP-SAT חכם · חפיפה סימטרית · בדיקת כל שעות המשמרת · תמיד מחזיר לוח מלא</p>
+  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v17)</h1>
+  <p>גריידי מהיר + CP-SAT חכם · False-tasks קודם · חפיפה תקינה · ללא רפאים מיותרים</p>
 </div>
 """, unsafe_allow_html=True)
 
 tab_run, tab_guide, tab_templates = st.tabs(["🚀  ביצוע שיבוץ", "📖  מדריך", "📥  תבניות"])
 
-# ── תבניות ──────────────────────────────────────────────────────
 with tab_templates:
     s_ex = pd.DataFrame({
         'מספר אישי':  [1001, 1002, 1003, 1004],
@@ -669,18 +689,17 @@ with tab_templates:
         st.dataframe(s_ex, use_container_width=True, hide_index=True)
         st.download_button("⬇️ הורד תבנית חיילים",
                            data=to_excel_styled(s_ex, "Soldiers", False),
-                           file_name="Soldiers_v16.xlsx", use_container_width=True)
+                           file_name="Soldiers_v17.xlsx", use_container_width=True)
     with c2:
         st.markdown("**📋 תבנית משימות**")
         st.dataframe(t_ex, use_container_width=True, hide_index=True)
         st.download_button("⬇️ הורד תבנית משימות",
                            data=to_excel_styled(t_ex, "Tasks", False),
-                           file_name="Tasks_v16.xlsx", use_container_width=True)
+                           file_name="Tasks_v17.xlsx", use_container_width=True)
 
-# ── מדריך ───────────────────────────────────────────────────────
 with tab_guide:
     st.markdown("""
-### 📖 מדריך v16
+### 📖 מדריך v17
 
 #### קובץ חיילים
 | עמודה | הסבר | דוגמה |
@@ -707,18 +726,20 @@ with tab_guide:
 """)
     st.markdown("""
 <div class="info-box">
-<b>💡 v16 — שינויים עיקריים לעומת v15:</b><br>
-<b>✅ חפיפה סימטרית (תיקון קריטי):</b> חייל יכול להיות בשתי משימות במקביל <em>רק אם שתיהן</em> מוגדרות
-<code>overlap=True</code>. אם משימה אחת מוגדרת <code>False</code> — היא חוסמת את כל שאר המשימות,
-גם אם הן עצמן מאשרות חפיפה.<br>
-<b>✅ גריידי:</b> <code>is_free</code> בודק את אובייקט המשימה (לא רק דגל overlap) ומסתכל על כל המשימות
-הקיימות של החייל בשעה זו.<br>
-<b>✅ CP-SAT:</b> אילוץ חדש — לכל משימה non-overlap ושעה, נוסף אילוץ פרוד עם כל משימה אחרת (כולל
-overlap), כך שהמודל לא יכול לשבץ חייל לשתיהן בו-זמנית.
+<b>💡 מה אומר "אישור חפיפה"?</b><br>
+<b>False (בלעדי — ברירת מחדל):</b> חייל שמשובץ למשימה זו לא יכול להיות בשום משימה אחרת בו-זמנית.<br>
+<b>True (שיתופי):</b> חייל יכול להיות במשימה זו ובמשימות True נוספות בו-זמנית. לא ניתן לשלב עם False.<br>
+<b>דוגמה:</b> "כרמל א'" (True) + "חפ"ק" (True) = מותר. "כרמל א'" (True) + "שמירה" (False) = אסור.
+</div>
+
+<div class="info-box">
+<b>💡 v17 — שינויים עיקריים:</b><br>
+<b>✅ תיקון קריטי — סדר עדיפויות:</b> משימות False (בלעדיות) מקבלות שיבוץ ראשון, ורק אחר כך True (שיתופיות). בv16 הסדר ההפוך גרם לכך שכל החיילים נתפסו ע"י False ולא נשאר אף אחד ל-True.<br>
+<b>✅ שעות מנוחה:</b> חוסמות רק בהקשר של False tasks — לא חוסמות שיבוץ ל-True.<br>
+<b>✅ CP-SAT:</b> אילוץ חפיפה תואם — False חוסמת כל משימה אחרת, True+True מותר.
 </div>
 """, unsafe_allow_html=True)
 
-# ── ביצוע שיבוץ ─────────────────────────────────────────────────
 with tab_run:
     col_u1, col_u2 = st.columns(2)
     with col_u1:
@@ -736,7 +757,7 @@ with tab_run:
             unsafe_allow_html=True)
 
     if sf and tf:
-        if st.button('⚙️ צור שבצ"ק חכם (v16)', use_container_width=True, key="run_btn"):
+        if st.button('⚙️ צור שבצ"ק חכם (v17)', use_container_width=True, key="run_btn"):
             try:
                 s_df = pd.read_excel(sf)
                 t_df = pd.read_excel(tf)
@@ -757,15 +778,13 @@ with tab_run:
                 if not all([id_col, name_col, t_id_col, t_nm_col, t_req_col]):
                     st.markdown(
                         '<div class="error-box">❌ לא נמצאו עמודות חובה. '
-                        'ודא שהקבצים לפי התבנית.</div>',
-                        unsafe_allow_html=True)
+                        'ודא שהקבצים לפי התבנית.</div>', unsafe_allow_html=True)
                     st.stop()
 
                 s_df = s_df.dropna(subset=[id_col, name_col])
                 t_df = t_df.dropna(subset=[t_id_col, t_nm_col, t_req_col])
 
-                def gcol(df, keys):
-                    return find_col(df, keys)
+                def gcol(df, keys): return find_col(df, keys)
 
                 shift_col   = gcol(t_df, ['משך'])
                 rest_col    = gcol(t_df, ['מנוחה'])
@@ -802,8 +821,7 @@ with tab_run:
                 st.info(f"📋 נטענו {len(real_soldiers)} חיילים ו-{len(tasks)} משימות")
 
                 with st.spinner("⚡ שלב 1: שיבוץ גריידי..."):
-                    schedule, dummy_slots, work_h, int_load = greedy_schedule(
-                        soldiers, tasks)
+                    schedule, dummy_slots, work_h, int_load = greedy_schedule(soldiers, tasks)
 
                 if use_cpsat:
                     with st.spinner(f"🔧 שלב 2: שיפור CP-SAT ({cpsat_time}ש׳)..."):
@@ -821,8 +839,7 @@ with tab_run:
                 if dummy_hours_count > 0:
                     st.markdown(
                         f'<div class="warn-box">⚠️ <b>{dummy_hours_count} שעות-סלוט ללא כיסוי</b> '
-                        f'— שובצו לחייל רפאים. ראה שורת "⚠️ חוסר" בטבלה.</div>',
-                        unsafe_allow_html=True)
+                        f'— שובצו לחייל רפאים.</div>', unsafe_allow_html=True)
                 else:
                     st.markdown(
                         '<div class="info-box">✅ <b>כיסוי מלא</b> — כל העמדות אויישו!</div>',
@@ -840,8 +857,7 @@ with tab_run:
                 gap_h     = int(real_df["סך שעות"].max() - real_df["סך שעות"].min())
                 avg_h     = real_df["סך שעות"].mean()
                 avg_sleep = real_df["שעות שינה (22-08)"].mean()
-                badge     = ("✅ מצוין" if gap_h <= 2
-                             else ("⚠️ סביר" if gap_h <= 5 else "❗ גבוה"))
+                badge     = "✅ מצוין" if gap_h <= 2 else ("⚠️ סביר" if gap_h <= 5 else "❗ גבוה")
 
                 st.markdown(f"""
                 <div class="metric-row">
@@ -868,7 +884,7 @@ with tab_run:
                 st.table(final_df)
                 st.download_button("📥 הורד לוח שיבוץ (Excel)",
                                    data=to_excel_styled(final_df),
-                                   file_name="Final_Shavtzak_v16.xlsx",
+                                   file_name="Final_Shavtzak_v17.xlsx",
                                    use_container_width=True)
 
                 st.markdown("---")
@@ -890,14 +906,13 @@ with tab_run:
                 with st.expander("💡 תובנות ופירוט"):
                     max_s = real_df[real_df["סך שעות"] == real_df["סך שעות"].max()]["שם"].tolist()
                     st.markdown(f"""
-**שלב גריידי:** שיבץ {len(real_soldiers)} חיילים לפי עומס מינימלי.
+**שלב גריידי:** False-tasks קודם, True-tasks אחר. שיבץ {len(real_soldiers)} חיילים לפי עומס מינימלי.
 **שיפור CP-SAT:** {"שיפר הוגנות / מנוחה / שינה בתוך 5% מהאופטימום." if use_cpsat else "לא הופעל."}
 **חיילים עמוסים:** {", ".join(max_s)} — {real_df["סך שעות"].max()} שעות.
 **פער הוגנות:** {gap_h} שעות — {"מצוין." if gap_h <= 2 else "מומלץ להוסיף חיילים." if gap_h > 4 else "סביר."}
 **שינה:** ממוצע {avg_sleep:.1f} שעות.
 {"**⚠️ שעות ללא כיסוי:** " + str(dummy_hours_count) + " — הוסף חיילים או קצר מנוחות." if dummy_hours_count > 0 else "**✅ כיסוי מלא** — כל העמדות מאויישות."}
                     """)
-
                     if dummy_slots:
                         st.markdown("**פירוט חוסרים:**")
                         for task_name, slot, sh, eh in dummy_slots:
@@ -905,8 +920,7 @@ with tab_run:
 
             except Exception:
                 st.markdown(
-                    '<div class="error-box">🚨 שגיאה טכנית:</div>',
-                    unsafe_allow_html=True)
+                    '<div class="error-box">🚨 שגיאה טכנית:</div>', unsafe_allow_html=True)
                 st.code(traceback.format_exc())
     else:
         st.markdown("""

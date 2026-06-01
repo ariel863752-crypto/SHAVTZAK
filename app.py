@@ -820,5 +820,3 @@ try:
 except Exception as e:
     st.error("🚨 שגיאה קריטית באפליקציה.")
     st.code(traceback.format_exc())
-
-```

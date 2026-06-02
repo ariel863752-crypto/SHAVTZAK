@@ -633,7 +633,7 @@ def build_task_df(soldiers, tasks, schedule, num_hours=24):
 try:
     st.markdown("""
     <div class="app-header">
-      <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v22)</h1>
+      <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה </h1>
       <p> · מהיר · יעיל ·  אפקטיבי  </p>
     </div>
     """, unsafe_allow_html=True)

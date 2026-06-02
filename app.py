@@ -745,8 +745,8 @@ try:
     # ── ביצוע שיבוץ ─────────────────────────────────────────────────
     with tab_run:
         col_u1, col_u2 = st.columns(2)
-        with col_u1: sf = st.file_uploader("📂 קובץ חיילים (xlsx)", type="xlsx", key="sf")
-        with col_u2: tf = st.file_uploader("📂 קובץ משימות (xlsx)", type="xlsx", key="tf")
+        with col_u1: sf = st.file_uploader("📂 קובץ חיילים ", type="xlsx", key="sf")
+        with col_u2: tf = st.file_uploader("📂 קובץ משימות ", type="xlsx", key="tf")
 
         # ── הנחיות מפקד ──────────────────────────────────────────────
         st.markdown("---")
@@ -754,14 +754,14 @@ try:
             st.markdown("""
             <div class="directive-box">
             <b>שיטה 1:</b> בנאי מובנה — בחר חייל, סוג הנחיה, משימה ושעות.<br>
-            <b>שיטה 2:</b> טקסט חופשי — "ארי חייב לשמור בין 14 ל-18" או "תומר אסור לו לעבוד במטבח"
+            <b>שיטה 2:</b> טקסט חופשי — "משה חייב לשמור בין 14 ל-18" או "תומר אסור לו לעבוד במטבח"
             </div>
             """, unsafe_allow_html=True)
 
             st.markdown("**➕ הוסף הנחיה מובנית:**")
             with st.form("directive_structured", clear_on_submit=True):
                 dc1, dc2, dc3, dc4, dc5 = st.columns([2,1.5,2,1,1])
-                with dc1: dir_soldier = st.text_input("שם חייל", placeholder="ארי כהן")
+                with dc1: dir_soldier = st.text_input("שם חייל", placeholder="אביב כהן")
                 with dc2: dir_type = st.selectbox("סוג", ["חייב ✅", "אסור ❌"])
                 with dc3: dir_task = st.text_input("שם משימה", placeholder="שמירה")
                 with dc4: dir_sh = st.number_input("משעה", min_value=0, max_value=23, value=0)

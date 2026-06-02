@@ -631,6 +631,28 @@ def build_task_df(soldiers, tasks, schedule, num_hours=24):
 # 10. ממשק משתמש הראשי
 # ══════════════════════════════════════════════════════════════════
 try:
+    # 1. הזרקת קוד CSS להגדרת כיווניות ימין-לשמאל (RTL) והצמדת הלשוניות לימין
+    st.markdown("""
+    <style>
+        /* הפיכת הדף כולו לימין-לשמאל */
+        .block-container {
+            direction: rtl;
+        }
+        
+        /* יישור מיכל הלשוניות לצד ימין */
+        div[data-baseweb="tab-list"] {
+            direction: rtl;
+        }
+        
+        /* יישור הטקסט בתוך כל לשונית */
+        div[data-baseweb="tab"] {
+            direction: rtl;
+            text-align: right;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # 2. הכותרת שלך (ללא שינוי)
     st.markdown("""
     <div class="app-header">
       <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה </h1>
@@ -638,6 +660,7 @@ try:
     </div>
     """, unsafe_allow_html=True)
 
+    # 3. יצירת הלשוניות
     tab_run, tab_guide, tab_templates = st.tabs(["🚀  ביצוע שיבוץ", "📖  מדריך", "📥  תבניות"])
 
     # ── תבניות ──────────────────────────────────────────────────────

@@ -627,32 +627,37 @@ def build_task_df(soldiers, tasks, schedule, num_hours=24):
     df.set_index("שעה", inplace=True)
     return df
 
-# ══════════════════════════════════════════════════════════════════
 # 10. ממשק משתמש הראשי
 # ══════════════════════════════════════════════════════════════════
 try:
-    # 1. הזרקת קוד CSS להגדרת כיווניות ימין-לשמאל (RTL) והצמדת הלשוניות לימין
+    # הזרקת קוד CSS חזק יותר ליישור לימין (RTL)
     st.markdown("""
     <style>
-        /* הפיכת הדף כולו לימין-לשמאל */
-        .block-container {
-            direction: rtl;
-        }
-        
-        /* יישור מיכל הלשוניות לצד ימין */
-        div[data-baseweb="tab-list"] {
-            direction: rtl;
-        }
-        
-        /* יישור הטקסט בתוך כל לשונית */
-        div[data-baseweb="tab"] {
+        /* הפיכת האפליקציה כולה לימין-לשמאל */
+        .stApp {
             direction: rtl;
             text-align: right;
+        }
+        
+        /* טיפול ספציפי באזור הלשוניות (Tabs) - דחיפה ימינה */
+        div[data-testid="stTabs"] > div:first-child {
+            direction: rtl;
+            justify-content: flex-start !important;
+        }
+        
+        /* הגדרת כיווניות ימינה לכל כפתור לשונית בנפרד */
+        button[data-baseweb="tab"] {
+            direction: rtl !important;
+        }
+        
+        /* יישור הטקסט בתוך רכיבי טקסט רגילים */
+        .stMarkdown, .stText {
+            text-align: right !important;
+            direction: rtl !important;
         }
     </style>
     """, unsafe_allow_html=True)
 
-    # 2. הכותרת שלך (ללא שינוי)
     st.markdown("""
     <div class="app-header">
       <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה </h1>
@@ -660,9 +665,8 @@ try:
     </div>
     """, unsafe_allow_html=True)
 
-    # 3. יצירת הלשוניות
+    # יצירת הלשוניות (זכור שכעת הראשונה ברשימה תהיה הימנית ביותר)
     tab_run, tab_guide, tab_templates = st.tabs(["🚀  ביצוע שיבוץ", "📖  מדריך", "📥  תבניות"])
-
     # ── תבניות ──────────────────────────────────────────────────────
     with tab_templates:
         s_ex = pd.DataFrame({

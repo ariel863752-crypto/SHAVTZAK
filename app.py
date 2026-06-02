@@ -634,7 +634,7 @@ try:
     st.markdown("""
     <div class="app-header">
       <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v22)</h1>
-      <p> מהיר · יעיל ·  אפקטיבי · </p>
+      <p> · מהיר · יעיל ·  אפקטיבי  </p>
     </div>
     """, unsafe_allow_html=True)
 

@@ -1,4 +1,3 @@
-
 import io
 import re
 import streamlit as st
@@ -20,61 +19,183 @@ if "adhoc_tasks" not in st.session_state:
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap');
-html,body{direction:rtl}
-.stApp,[data-testid="stAppViewContainer"],.main,.block-container,
-.stMarkdown,p,span,li,label,div,
-[data-testid="stText"],[data-testid="stMarkdownContainer"],
-[data-testid="stAlert"],[data-testid="stExpander"] summary,
-[data-testid="stFileUploader"] label,[data-testid="stFileUploader"] div,
-[data-testid="stSlider"] label,[data-testid="stSelectbox"] label{
-  font-family:'Heebo',sans-serif!important;direction:rtl!important;text-align:right!important}
-.stApp{background:#f2f5f2}.block-container{padding:2rem 2.5rem 3rem;max-width:1400px}
-.app-header{background:linear-gradient(135deg,#1a3d17 0%,#2d5a27 60%,#3d7a35 100%);
-  border-radius:16px;padding:30px 35px;margin-bottom:28px;
-  box-shadow:0 4px 20px rgba(45,90,39,.25);text-align:right}
-.app-header h1{font-size:clamp(22px,4vw,38px);font-weight:900;color:white;margin:0 0 8px;letter-spacing:-.5px}
-.app-header p{font-size:15px;color:rgba(255,255,255,.88);margin:0}
-[data-testid="stTabs"] [data-baseweb="tab-list"]{flex-direction:row-reverse!important;
-  justify-content:flex-start!important;gap:6px;background:white;border-radius:12px;
-  padding:5px;border:1px solid #dde8dc;margin-bottom:20px}
-[data-testid="stTabs"] [data-baseweb="tab"]{border-radius:8px;font-weight:600;
-  font-size:14px;padding:8px 20px;color:#5a7a57;direction:rtl}
-[data-testid="stTabs"] [aria-selected="true"]{background:#2d5a27!important;color:white!important}
-.metric-row{display:flex;flex-direction:row-reverse;gap:16px;margin:22px 0;flex-wrap:wrap}
-.metric-card{flex:1;min-width:160px;background:white;border-radius:14px;padding:22px;
-  border:1px solid #dde8dc;box-shadow:0 2px 8px rgba(45,90,39,.07);text-align:right;direction:rtl}
-.mc-label{font-size:11px;color:#7a9a77;font-weight:700;letter-spacing:.8px;margin-bottom:6px}
-.mc-value{font-size:34px;font-weight:900;color:#1a3d17;line-height:1}
-.mc-sub{font-size:12px;color:#a0b89d;margin-top:4px}
-div.stButton>button:first-child{background:linear-gradient(135deg,#2d5a27,#3d7a35)!important;
-  color:white!important;font-weight:700!important;font-size:17px!important;
-  border-radius:10px!important;border:none!important;height:3.4em;width:100%;
-  box-shadow:0 4px 14px rgba(45,90,39,.3);transition:all .18s!important}
-[data-testid="stDownloadButton"]>button{background:#b84d00!important;color:white!important;
-  font-weight:600!important;border-radius:10px!important;border:none!important}
-[data-testid="stFileUploader"]{background:white;border-radius:12px;padding:14px 16px;
-  border:2px dashed #c0d8bc;direction:rtl;text-align:right}
-[data-testid="stTable"] table{width:100%;border-collapse:collapse;font-size:12px;
-  background:white;direction:rtl}
-[data-testid="stTable"] th{background:#2d5a27!important;color:white!important;
-  padding:9px 12px!important;font-weight:600!important;text-align:right!important}
-[data-testid="stTable"] td{padding:8px 12px!important;border-bottom:1px solid #f0f0f0!important;
-  text-align:right!important}
-[data-testid="stTable"] tr:nth-child(even) td{background:#f8fcf7!important}
-.info-box{background:#edf5ec;border-right:5px solid #2d5a27;padding:14px 18px;margin:14px 0;
-  font-size:14px;color:#1a3d17;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
-.warn-box{background:#fff8e6;border-right:5px solid #e67e22;padding:14px 18px;margin:14px 0;
-  font-size:14px;color:#7a4500;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
-.error-box{background:#fdecea;border-right:5px solid #c0392b;padding:14px 18px;margin:14px 0;
-  font-size:14px;color:#7a0010;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
-.adhoc-box{background:#f0f4ff;border-right:5px solid #3a5bc7;padding:14px 18px;margin:14px 0;
-  font-size:14px;color:#1a2d7a;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
-.directive-box{background:#fdf6ff;border-right:5px solid #8b5cf6;padding:14px 18px;margin:14px 0;
-  font-size:14px;color:#3b0764;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
-.rec-box{background:#fffbeb;border-right:5px solid #f59e0b;padding:14px 18px;margin:14px 0;
-  font-size:14px;color:#78350f;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
-.infeasible-box{background:#fff0f0;border-right:5px solid #e53e3e;padding:14px 18px;margin:14px 0;
-  font-size:14px;color:#63171b;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
+
+/* ── בסיס RTL ── */
+html, body { direction: rtl; }
+
+.stApp,
+[data-testid="stAppViewContainer"],
+.main,
+.block-container,
+.stMarkdown,
+[data-testid="stMarkdownContainer"],
+[data-testid="stText"] {
+  font-family: 'Heebo', sans-serif !important;
+  direction: rtl !important;
+  text-align: right !important;
+}
+
+/* תוויות - ללא direction כפוי */
+p, span, li, label, div {
+  font-family: 'Heebo', sans-serif !important;
+}
+
+.stApp { background: #f2f5f2; }
+.block-container { padding: 2rem 2.5rem 3rem; max-width: 1400px; }
+
+/* ── כותרת ── */
+.app-header {
+  background: linear-gradient(135deg,#1a3d17 0%,#2d5a27 60%,#3d7a35 100%);
+  border-radius: 16px; padding: 30px 35px; margin-bottom: 28px;
+  box-shadow: 0 4px 20px rgba(45,90,39,.25); text-align: right;
+}
+.app-header h1 {
+  font-size: clamp(22px,4vw,38px); font-weight: 900; color: white;
+  margin: 0 0 8px; letter-spacing: -.5px;
+}
+.app-header p { font-size: 15px; color: rgba(255,255,255,.88); margin: 0; }
+
+/* ══════════════════════════════════════════════════
+   תיקון 1: TABS — ימין לשמאל נכון
+   flex-direction:row-reverse + justify-content:flex-end
+   שם את הלשונית הראשונה ברשימה בצד ימין
+   ══════════════════════════════════════════════════ */
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+  flex-direction: row-reverse !important;
+  justify-content: flex-end !important;
+  gap: 6px;
+  background: white;
+  border-radius: 12px;
+  padding: 5px;
+  border: 1px solid #dde8dc;
+  margin-bottom: 20px;
+}
+[data-testid="stTabs"] [data-baseweb="tab"] {
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  padding: 8px 20px;
+  color: #5a7a57;
+  direction: rtl;
+  font-family: 'Heebo', sans-serif !important;
+}
+[data-testid="stTabs"] [aria-selected="true"] {
+  background: #2d5a27 !important;
+  color: white !important;
+}
+
+/* ══════════════════════════════════════════════════
+   תיקון 2: EXPANDER — מניעת שבירת פונט Material Icons
+   הבעיה: direction:rtl על summary שובר תווי Unicode
+   שמשמשים כאייקונים (keyboard_arrow_down וכו')
+   הפתרון: RTL רק על הטקסט, LTR+bidi-override על האייקון
+   ══════════════════════════════════════════════════ */
+[data-testid="stExpander"] summary {
+  direction: rtl;
+  text-align: right;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+}
+
+/* הטקסט בתוך ה-summary — RTL תקין */
+[data-testid="stExpander"] summary p,
+[data-testid="stExpander"] summary span:not([data-testid="stExpanderToggleIcon"]) {
+  direction: rtl !important;
+  text-align: right !important;
+  font-family: 'Heebo', sans-serif !important;
+  flex: 1;
+}
+
+/* האייקון — כופים LTR ו-bidi-override כדי שתווי Material Icons לא יתפרקו */
+[data-testid="stExpanderToggleIcon"],
+[data-testid="stExpander"] summary svg,
+[data-testid="stExpander"] summary > span:last-child,
+[data-testid="stExpander"] summary > div:last-child {
+  direction: ltr !important;
+  unicode-bidi: bidi-override !important;
+  font-family: 'Material Icons', 'Material Symbols Rounded' !important;
+  order: -1;
+}
+
+/* ══════════════════════════════════════════════════
+   תיקון 3: FILE UPLOADER — מניעת כפילות "Browse files"
+   הבעיה: direction:rtl על כל הרכיבים גורם לטקסט LTR
+   בתוך button להיכפל ויזואלית (bidi algorithm)
+   הפתרון: RTL רק על ה-wrapper החיצוני, ולא על button
+   ══════════════════════════════════════════════════ */
+[data-testid="stFileUploader"] {
+  background: white;
+  border-radius: 12px;
+  padding: 14px 16px;
+  border: 2px dashed #c0d8bc;
+  direction: rtl;
+  text-align: right;
+}
+
+/* label וטקסט הסבר — RTL */
+[data-testid="stFileUploader"] label,
+[data-testid="stFileUploader"] section > div {
+  direction: rtl !important;
+  text-align: right !important;
+  font-family: 'Heebo', sans-serif !important;
+}
+
+/* button ו-span פנימיים — LTR+bidi-override, מונע כפילות */
+[data-testid="stFileUploader"] button,
+[data-testid="stFileUploader"] button span,
+[data-testid="stFileUploader"] section small,
+[data-testid="stFileUploader"] section p {
+  direction: ltr !important;
+  unicode-bidi: bidi-override !important;
+  font-family: 'Heebo', sans-serif !important;
+}
+
+/* ── Metric Cards ── */
+.metric-row {
+  display: flex; flex-direction: row-reverse;
+  gap: 16px; margin: 22px 0; flex-wrap: wrap;
+}
+.metric-card {
+  flex: 1; min-width: 160px; background: white; border-radius: 14px;
+  padding: 22px; border: 1px solid #dde8dc;
+  box-shadow: 0 2px 8px rgba(45,90,39,.07);
+  text-align: right; direction: rtl;
+}
+.mc-label { font-size: 11px; color: #7a9a77; font-weight: 700; letter-spacing: .8px; margin-bottom: 6px; }
+.mc-value { font-size: 34px; font-weight: 900; color: #1a3d17; line-height: 1; }
+.mc-sub   { font-size: 12px; color: #a0b89d; margin-top: 4px; }
+
+/* ── כפתורים ── */
+div.stButton > button:first-child {
+  background: linear-gradient(135deg,#2d5a27,#3d7a35) !important;
+  color: white !important; font-weight: 700 !important;
+  font-size: 17px !important; border-radius: 10px !important;
+  border: none !important; height: 3.4em; width: 100%;
+  box-shadow: 0 4px 14px rgba(45,90,39,.3);
+  font-family: 'Heebo', sans-serif !important;
+}
+[data-testid="stDownloadButton"] > button {
+  background: #b84d00 !important; color: white !important;
+  font-weight: 600 !important; border-radius: 10px !important;
+  border: none !important;
+  font-family: 'Heebo', sans-serif !important;
+}
+
+/* ── טבלה ── */
+[data-testid="stTable"] table { width: 100%; border-collapse: collapse; font-size: 12px; background: white; direction: rtl; }
+[data-testid="stTable"] th   { background: #2d5a27 !important; color: white !important; padding: 9px 12px !important; font-weight: 600 !important; text-align: right !important; }
+[data-testid="stTable"] td   { padding: 8px 12px !important; border-bottom: 1px solid #f0f0f0 !important; text-align: right !important; }
+[data-testid="stTable"] tr:nth-child(even) td { background: #f8fcf7 !important; }
+
+/* ── תיבות ── */
+.info-box       { background:#edf5ec; border-right:5px solid #2d5a27;  padding:14px 18px; margin:14px 0; font-size:14px; color:#1a3d17;  line-height:1.8; direction:rtl; text-align:right; border-radius:0 10px 10px 0; }
+.warn-box       { background:#fff8e6; border-right:5px solid #e67e22;  padding:14px 18px; margin:14px 0; font-size:14px; color:#7a4500;  line-height:1.8; direction:rtl; text-align:right; border-radius:0 10px 10px 0; }
+.error-box      { background:#fdecea; border-right:5px solid #c0392b;  padding:14px 18px; margin:14px 0; font-size:14px; color:#7a0010;  line-height:1.8; direction:rtl; text-align:right; border-radius:0 10px 10px 0; }
+.adhoc-box      { background:#f0f4ff; border-right:5px solid #3a5bc7;  padding:14px 18px; margin:14px 0; font-size:14px; color:#1a2d7a;  line-height:1.8; direction:rtl; text-align:right; border-radius:0 10px 10px 0; }
+.directive-box  { background:#fdf6ff; border-right:5px solid #8b5cf6;  padding:14px 18px; margin:14px 0; font-size:14px; color:#3b0764;  line-height:1.8; direction:rtl; text-align:right; border-radius:0 10px 10px 0; }
+.rec-box        { background:#fffbeb; border-right:5px solid #f59e0b;  padding:14px 18px; margin:14px 0; font-size:14px; color:#78350f;  line-height:1.8; direction:rtl; text-align:right; border-radius:0 10px 10px 0; }
+.infeasible-box { background:#fff0f0; border-right:5px solid #e53e3e;  padding:14px 18px; margin:14px 0; font-size:14px; color:#63171b;  line-height:1.8; direction:rtl; text-align:right; border-radius:0 10px 10px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -291,7 +412,7 @@ def diagnose_infeasible_model(soldiers, tasks, directives):
     return insights
 
 # ══════════════════════════════════════════════════════════════════
-# 6. Excel 
+# 6. Excel
 # ══════════════════════════════════════════════════════════════════
 def to_excel_styled(df, sheet_name='שבצ"ק', include_index=True):
     out = io.BytesIO()
@@ -627,37 +748,10 @@ def build_task_df(soldiers, tasks, schedule, num_hours=24):
     df.set_index("שעה", inplace=True)
     return df
 
+# ══════════════════════════════════════════════════════════════════
 # 10. ממשק משתמש הראשי
 # ══════════════════════════════════════════════════════════════════
 try:
-    # הזרקת קוד CSS חזק יותר ליישור לימין (RTL)
-    st.markdown("""
-    <style>
-        /* הפיכת האפליקציה כולה לימין-לשמאל */
-        .stApp {
-            direction: rtl;
-            text-align: right;
-        }
-        
-        /* טיפול ספציפי באזור הלשוניות (Tabs) - דחיפה ימינה */
-        div[data-testid="stTabs"] > div:first-child {
-            direction: rtl;
-            justify-content: flex-start !important;
-        }
-        
-        /* הגדרת כיווניות ימינה לכל כפתור לשונית בנפרד */
-        button[data-baseweb="tab"] {
-            direction: rtl !important;
-        }
-        
-        /* יישור הטקסט בתוך רכיבי טקסט רגילים */
-        .stMarkdown, .stText {
-            text-align: right !important;
-            direction: rtl !important;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-
     st.markdown("""
     <div class="app-header">
       <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה </h1>
@@ -665,8 +759,8 @@ try:
     </div>
     """, unsafe_allow_html=True)
 
-    # יצירת הלשוניות (זכור שכעת הראשונה ברשימה תהיה הימנית ביותר)
     tab_run, tab_guide, tab_templates = st.tabs(["🚀  ביצוע שיבוץ", "📖  מדריך", "📥  תבניות"])
+
     # ── תבניות ──────────────────────────────────────────────────────
     with tab_templates:
         s_ex = pd.DataFrame({
@@ -692,11 +786,11 @@ try:
             st.download_button("⬇️ הורד", data=to_excel_styled(t_ex,"Tasks",False),
                                file_name="Tasks_v22.xlsx", use_container_width=True)
 
- # ── מדריך ───────────────────────────────────────────────────────
+    # ── מדריך ───────────────────────────────────────────────────────
     with tab_guide:
         st.markdown("### 📖 מדריך מקיף למשתמש — שבצ\"ק חכם")
         st.markdown("מערכת זו נועדה לחסוך זמן ולייצר שיבוץ הוגן, מדויק וללא טעויות אנוש. עקבו אחר ההנחיות למילוי הקבצים:")
-        
+
         st.markdown("#### 👥 1. קובץ חיילים (מצבת כוח אדם)")
         st.markdown("""
 | עמודה | הסבר | דוגמה למילוי |
@@ -706,7 +800,7 @@ try:
 | **הסמכות** | תפקידים מיוחדים שהחייל מוסמך אליהם. | `חובש`, `נהג, מפקד` |
 | **שעות חסימה** | שעות שבהן החייל חסום מלעבוד (חופש, לו"ז אישי). | `8-12`, `22-6`, `14` |
         """)
-        
+
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("#### 📋 2. קובץ משימות")
         st.markdown("""
@@ -730,12 +824,12 @@ try:
         ניתן לכתוב טקסט חופשי, למשל: <i>"אריאל חייב לשמור בין 14 ל-18"</i> או <i>"תומר אסור לו לעבוד במטבח"</i>.<br>
         <span style="font-size: 0.9em; color: #5a2a82;">* במידה ותוזן הנחיה שסותרת אילוצים אחרים (למשל לשבץ חייל בשעות שהוא חסום), המערכת תתריע על כך.</span>
         </div>
-        
+
         <div class="adhoc-box">
         <b>🔵 משימות אד-הוק (Ad-Hoc):</b><br>
         קפצה משימה פתאומית? אין צורך לערוך את הקבצים. ניתן להוסיף אותה זמנית תחת "משימות אד-הוק" במסך הראשי, והאלגוריתם יתחשב בה בשיבוץ.
         </div>
-        
+
         <div class="rec-box">
         <b>💡 פענוח תוצאות והמלצות לחוסרים:</b><br>
         אם יוצגו "חורים" בלוח והמערכת תתקשה לאייש עמדה (סימון ⚠️), היא תנתח את הסיבה המתמטית (למשל: 'כל הנהגים בשעות מנוחה') ותמליץ לכם קונקרטית כיצד לפתור את הפלונטר.
@@ -816,7 +910,7 @@ try:
                         st.stop()
 
                     s_df, t_df = s_df.dropna(subset=[id_col, name_col]), t_df.dropna(subset=[t_id_col, t_nm_col, t_req_col])
-                    
+
                     shift_col, rest_col = find_col(t_df, ['משך']), find_col(t_df, ['מנוחה'])
                     overlap_col, hours_col = find_col(t_df, ['חפיפה']), find_col(t_df, ['פעילות','שעות'])
                     role_col, intense_col, block_col = find_col(t_df, ['הסמכה']), find_col(t_df, ['עצימות']), find_col(t_df, ['חסומים'])
@@ -859,10 +953,10 @@ try:
                             for i in insights: st.markdown(f'<div class="warn-box">{i}</div>', unsafe_allow_html=True)
 
                     dummy_hours_count = sum(1 for t in tasks for si in range(len(t.slots)) for h in range(24) if schedule[t.tid][si][h] == DUMMY_SID)
-                    
+
                     final_df = build_result_df(soldiers, tasks, schedule)
                     real_df = final_df[~final_df["שם"].str.startswith("⚠️")]
-                    
+
                     st.markdown("---")
                     st.subheader("📅 לוח לפי חייל")
                     st.table(final_df)
@@ -870,7 +964,7 @@ try:
                     st.markdown("---")
                     st.subheader("📋 לוח לפי משימה")
                     st.table(build_task_df(soldiers, tasks, schedule))
-                    
+
                     if dummy_hours_count > 0:
                         st.markdown("---")
                         st.subheader("💡 המלצות המערכת לפתרון חוסרים")

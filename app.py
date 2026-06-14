@@ -869,6 +869,17 @@ try:
                     st.markdown("---")
                     st.subheader("📋 לוח לפי משימה")
                     st.table(build_task_df(soldiers, tasks, schedule))
+                    dl_col1, dl_col2 = st.columns(2)
+                    with dl_col1:
+                        st.download_button("📥 הורד לוח שיבוץ לפי חיילים (Excel)",
+                                           data=to_excel_styled(final_df),
+                                           file_name="Shavtzak_Soldiers.xlsx",
+                                           use_container_width=True)
+                    with dl_col2:
+                        st.download_button("📥 הורד לוח שיבוץ לפי משימות (Excel)",
+                                           data=to_excel_task_view(soldiers, tasks, schedule),
+                                           file_name="Shavtzak_Tasks.xlsx",
+                                           use_container_width=True)
                     
                     if dummy_hours_count > 0:
                         st.markdown("---")

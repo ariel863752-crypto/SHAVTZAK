@@ -795,7 +795,7 @@ try:
             use_cpsat  = st.toggle("שיפור CP-SAT", value=True)
             cpsat_time = st.slider("זמן CP-SAT (שניות)", 10, 180, 60, 5)
 
-        # ── הרצה ─────────────────────────────────────────────────────
+       # ── הרצה ─────────────────────────────────────────────────────
         if sf and tf:
             if st.button('⚙️ צור שבצ"ק חכם', use_container_width=True):
                 try:
@@ -860,36 +860,52 @@ try:
                     dummy_hours_count = sum(1 for t in tasks for si in range(len(t.slots)) for h in range(24) if schedule[t.tid][si][h] == DUMMY_SID)
                     
                     final_df = build_result_df(soldiers, tasks, schedule)
-                    real_df = final_df[~final_df["שם"].str.startswith("⚠️")]
                     
-                    st.markdown("---")
-                    st.subheader("📅 לוח לפי חייל")
-                    st.table(final_df)
-
-                    st.markdown("---")
-                    st.subheader("📋 לוח לפי משימה")
-                    st.table(build_task_df(soldiers, tasks, schedule))
-                    dl_col1, dl_col2 = st.columns(2)
-                    with dl_col1:
-                        st.download_button("📥 הורד לוח שיבוץ לפי חיילים (Excel)",
-                                           data=to_excel_styled(final_df),
-                                           file_name="Shavtzak_Soldiers.xlsx",
-                                           use_container_width=True)
-                    with dl_col2:
-                        st.download_button("📥 הורד לוח שיבוץ לפי משימות (Excel)",
-                                           data=to_excel_task_view(soldiers, tasks, schedule),
-                                           file_name="Shavtzak_Tasks.xlsx",
-                                           use_container_width=True)
-                    
-                    if dummy_hours_count > 0:
-                        st.markdown("---")
-                        st.subheader("💡 המלצות המערכת לפתרון חוסרים")
-                        for r in diagnose_dummy_slots(soldiers, tasks, schedule):
-                            st.markdown(f"<div class='rec-box'>🎯 {r['משימה']} | 🕐 {r['שעות']}<br>📋 {r['סיבה']}<br>✅ {r['המלצה']}</div>", unsafe_allow_html=True)
+                    # שמירת התוצאות ל-session_state במקום להציג אותן ישירות בתוך הבלוק של הכפתור
+                    st.session_state['results'] = {
+                        'final_df': final_df,
+                        'task_df': build_task_df(soldiers, tasks, schedule),
+                        'soldiers_excel': to_excel_styled(final_df),
+                        'tasks_excel': to_excel_task_view(soldiers, tasks, schedule),
+                        'dummy_hours': dummy_hours_count,
+                        'recs': diagnose_dummy_slots(soldiers, tasks, schedule) if dummy_hours_count > 0 else []
+                    }
 
                 except Exception as e:
                     st.markdown('<div class="error-box">🚨 <b>שגיאה טכנית בזמן הרצה</b></div>', unsafe_allow_html=True)
                     st.code(traceback.format_exc())
+            
+            # שליפה והצגה של התוצאות מחוץ לבלוק של ה-button
+            # ככה התצוגה לא תיעלם כשהדף יתרענן בעת הורדת אקסל
+            if 'results' in st.session_state:
+                res = st.session_state['results']
+                
+                st.markdown("---")
+                st.subheader("📅 לוח לפי חייל")
+                st.table(res['final_df'])
+
+                st.markdown("---")
+                st.subheader("📋 לוח לפי משימה")
+                st.table(res['task_df'])
+                
+                dl_col1, dl_col2 = st.columns(2)
+                with dl_col1:
+                    st.download_button("📥 הורד לוח שיבוץ לפי חיילים (Excel)",
+                                       data=res['soldiers_excel'],
+                                       file_name="Shavtzak_Soldiers.xlsx",
+                                       use_container_width=True)
+                with dl_col2:
+                    st.download_button("📥 הורד לוח שיבוץ לפי משימות (Excel)",
+                                       data=res['tasks_excel'],
+                                       file_name="Shavtzak_Tasks.xlsx",
+                                       use_container_width=True)
+                
+                if res['dummy_hours'] > 0:
+                    st.markdown("---")
+                    st.subheader("💡 המלצות המערכת לפתרון חוסרים")
+                    for r in res['recs']:
+                        st.markdown(f"<div class='rec-box'>🎯 {r['משימה']} | 🕐 {r['שעות']}<br>📋 {r['סיבה']}<br>✅ {r['המלצה']}</div>", unsafe_allow_html=True)
+
         else:
             st.markdown('<div class="info-box">👆 העלו קבצי אקסל כדי להתחיל.</div>', unsafe_allow_html=True)
 

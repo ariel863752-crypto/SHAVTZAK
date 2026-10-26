@@ -6,6 +6,24 @@ from ortools.sat.python import cp_model
 import traceback
 from typing import List
 
+# ── session state init ─────────────────────────────────────────────
+if "result_ready" not in st.session_state:
+    st.session_state.result_ready = False
+if "final_df" not in st.session_state:
+    st.session_state.final_df = None
+if "task_df" not in st.session_state:
+    st.session_state.task_df = None
+if "dummy_hours_count" not in st.session_state:
+    st.session_state.dummy_hours_count = 0
+if "diagnosis_html" not in st.session_state:
+    st.session_state.diagnosis_html = ""
+if "metrics" not in st.session_state:
+    st.session_state.metrics = {}
+if "use_cpsat_flag" not in st.session_state:
+    st.session_state.use_cpsat_flag = True
+if "dummy_slots_list" not in st.session_state:
+    st.session_state.dummy_slots_list = []
+
 # ══════════════════════════════════════════════════════════════════
 # 1. עיצוב
 # ══════════════════════════════════════════════════════════════════
@@ -157,7 +175,9 @@ class Task:
         self.rest      = int(rest)    if pd.notna(rest)    else 0
         self.overlap   = str(overlap).strip().lower() == 'true'
         self.hours     = parse_time_ranges(hours)  # משימה → is_task=True (ברירת מחדל)
-        self.intensity = int(intensity) if pd.notna(intensity) else 1
+        # עצימות: נורמליזציה ל-1-10
+        raw = int(intensity) if pd.notna(intensity) else 1
+        self.intensity = max(1, min(10, raw))  # clamp 1-10
         self.block_roles = (
             [r.strip() for r in str(block_roles).split(',') if r.strip()]
             if pd.notna(block_roles) and str(block_roles).strip() not in ('', 'nan') else []
@@ -351,10 +371,16 @@ def greedy_schedule(soldiers: list, tasks: list, num_hours: int = 24):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 5. בניית DataFrame תוצאה
+# 5. בניית DataFrames תוצאה
 # ══════════════════════════════════════════════════════════════════
+
+def _intensity_to_score(raw_intensity: int) -> int:
+    """ממיר עצימות גולמית ל-1-10"""
+    return max(1, min(10, raw_intensity))
+
 def build_result_df(soldiers: list, tasks: list, schedule: dict,
                     num_hours: int = 24) -> pd.DataFrame:
+    """DataFrame לפי חייל — שורה לכל חייל, עמודה לכל שעה"""
     SLEEP_HOURS = set(range(22, 24)) | set(range(0, 9))  # 22:00–08:00
     hour_labels = [f"{h:02d}:00" for h in range(num_hours)]
 
@@ -362,9 +388,9 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
     for s in soldiers:
         if s.is_dummy:
             continue
-        row      = {"שם": s.name}
-        total    = 0
-        night    = 0
+        row       = {"שם": s.name}
+        total     = 0
+        night     = 0
         intensity = 0
 
         for h in range(num_hours):
@@ -375,7 +401,7 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
                     if assigned == s.sid:
                         active.append(t.name)
                         if not t.overlap:
-                            if h in SLEEP_HOURS:
+                            if h % 24 in SLEEP_HOURS:
                                 night += 1
                             intensity += t.intensity
             row[hour_labels[h]] = " + ".join(active) if active else "—"
@@ -383,7 +409,10 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
                 total += 1
 
         row["סך שעות"]          = total
-        row["מדד עצימות"]       = intensity
+        # מדד עצימות: ממוצע משוקלל מנורמל ל-1-10
+        intensity_score = round(intensity / max(total, 1), 1) if total > 0 else 0
+        intensity_score = max(0.0, min(10.0, intensity_score))
+        row["מדד עצימות (1-10)"] = intensity_score
         row["שעות שינה (22-08)"] = len(SLEEP_HOURS) - night
         rows.append(row)
 
@@ -396,12 +425,12 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
                 if schedule[t.tid][slot_idx][h] == DUMMY_SID:
                     dummy_slots_h.append(t.name)
         dummy_row[hour_labels[h]] = "❌ " + " + ".join(dummy_slots_h) if dummy_slots_h else "—"
-    dummy_row["סך שעות"] = sum(
+    dummy_row["סך שעות"]          = sum(
         1 for h in range(num_hours)
         for t in tasks for si in range(len(t.slots))
         if schedule[t.tid][si][h] == DUMMY_SID
     )
-    dummy_row["מדד עצימות"]       = "—"
+    dummy_row["מדד עצימות (1-10)"] = "—"
     dummy_row["שעות שינה (22-08)"] = "—"
 
     has_dummy = any(
@@ -413,6 +442,40 @@ def build_result_df(soldiers: list, tasks: list, schedule: dict,
     if has_dummy:
         df = pd.concat([df, pd.DataFrame([dummy_row])], ignore_index=True)
 
+    df.index = range(1, len(df) + 1)
+    return df
+
+
+def build_task_df(soldiers: list, tasks: list, schedule: dict,
+                  num_hours: int = 24) -> pd.DataFrame:
+    """DataFrame לפי משימה — שורה לכל (משימה, סלוט, שעה), עמודות: שם חייל"""
+    sid_to_name = {s.sid: s.name for s in soldiers if not s.is_dummy}
+    sid_to_name[DUMMY_SID] = "⚠️ חוסר"
+
+    rows = []
+    for t in tasks:
+        for si in range(len(t.slots)):
+            role_label = t.slots[si] or "—"
+            # קבץ שעות רצופות לטווח
+            shift_starts = t.get_shift_starts()
+            for start_h in shift_starts:
+                shift_hours = [(start_h + k) % num_hours for k in range(t.shift)]
+                # מי שובץ לסלוט זה בשעות אלה?
+                assigned_sid = schedule[t.tid][si][shift_hours[0]]
+                assigned_name = sid_to_name.get(assigned_sid, "—") if assigned_sid else "—"
+                end_h = shift_hours[-1]
+                rows.append({
+                    "משימה":          t.name,
+                    "סלוט":          si + 1,
+                    "הסמכה נדרשת":  role_label,
+                    "שעת התחלה":     f"{start_h:02d}:00",
+                    "שעת סיום":      f"{(end_h + 1) % 24:02d}:00",
+                    "חייל משובץ":    assigned_name,
+                    "סטטוס":         "✅ מאויש" if assigned_sid and assigned_sid != DUMMY_SID else "❌ חוסר",
+                    "עצימות (1-10)": t.intensity,
+                })
+
+    df = pd.DataFrame(rows)
     df.index = range(1, len(df) + 1)
     return df
 
@@ -674,8 +737,8 @@ def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
 # ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="app-header">
-  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v16)</h1>
-  <p>גריידי מהיר + CP-SAT חכם · סדר שיבוץ נכון · רציפות משמרת · כיסוי מקסימלי</p>
+  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v17)</h1>
+  <p>גריידי מהיר + CP-SAT חכם · שיבוץ יומי/שבועי · עצימות 1-10 · הורדה בשני פורמטים</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -699,7 +762,7 @@ with tab_templates:
         'אישור חפיפה בין משימות':   [False, False, True],
         'שעות פעילות':              ['all', 'all', 'all'],
         'הסמכה נדרשת':              ['', '', ''],
-        'דירוג עצימות משימה (1-3)': [2, 3, 1],
+        'דירוג עצימות משימה (1-10)': [5, 8, 2],
         'תפקידים חסומים':           ['', '', ''],
     })
     c1, c2 = st.columns(2)
@@ -741,7 +804,7 @@ with tab_guide:
 | אישור חפיפה | True/False | False |
 | שעות פעילות | all / 8-20 / 6,7,8 | all |
 | הסמכה נדרשת | תפקיד ספציפי | נהג |
-| דירוג עצימות | 1-3 | 2 |
+| דירוג עצימות | 1-10 | 7 |
 | תפקידים חסומים | מי לא יכול | קצין |
 """)
     st.markdown("""
@@ -762,8 +825,23 @@ with tab_run:
         tf = st.file_uploader("📂 קובץ משימות (xlsx)", type="xlsx", key="tf")
 
     with st.expander("⚙️ הגדרות מתקדמות"):
-        use_cpsat  = st.toggle("שיפור CP-SAT אחרי גריידי (משפר הוגנות)", value=True)
-        cpsat_time = st.slider("זמן CP-SAT (שניות)", 10, 120, 45, 5)
+        col_mode, col_cpsat = st.columns(2)
+        with col_mode:
+            sched_mode = st.radio(
+                "טווח שיבוץ",
+                ["📅 יומי (24 שעות)", "📆 שבועי (168 שעות)"],
+                index=0,
+                horizontal=True,
+            )
+            num_hours = 24 if "יומי" in sched_mode else 168
+            if num_hours == 168:
+                st.markdown(
+                    '<div class="warn-box" style="font-size:12px">⚠️ שיבוץ שבועי: '
+                    'CP-SAT עשוי לקחת זמן רב. מומלץ להגביל ל-60 שניות.</div>',
+                    unsafe_allow_html=True)
+        with col_cpsat:
+            use_cpsat  = st.toggle("שיפור CP-SAT אחרי גריידי (משפר הוגנות)", value=True)
+            cpsat_time = st.slider("זמן CP-SAT (שניות)", 10, 120, 45, 5)
         st.markdown(
             '<div class="info-box" style="font-size:12px">'
             'הגריידי <b>תמיד</b> רץ ראשון ומחזיר תוצאה. '
@@ -771,7 +849,8 @@ with tab_run:
             unsafe_allow_html=True)
 
     if sf and tf:
-        if st.button('⚙️ צור שבצ"ק חכם (v16)', use_container_width=True, key="run_btn"):
+        if st.button('⚙️ צור שבצ"ק חכם (v17)', use_container_width=True, key="run_btn"):
+            st.session_state.result_ready = False  # איפוס תוצאה קודמת
             try:
                 # ── קריאת קבצים ──────────────────────────────────
                 s_df = pd.read_excel(sf)
@@ -840,13 +919,14 @@ with tab_run:
                 # ── שלב א: גריידי ────────────────────────────────
                 with st.spinner("⚡ שלב 1: שיבוץ גריידי..."):
                     schedule, dummy_slots, work_h, int_load = greedy_schedule(
-                        soldiers, tasks)
+                        soldiers, tasks, num_hours=num_hours)
 
                 # ── שלב ב: CP-SAT ─────────────────────────────────
                 if use_cpsat:
                     with st.spinner(f"🔧 שלב 2: שיפור CP-SAT ({cpsat_time}ש׳)..."):
                         schedule = improve_with_cpsat(
-                            soldiers, tasks, schedule, time_limit=cpsat_time)
+                            soldiers, tasks, schedule,
+                            num_hours=num_hours, time_limit=cpsat_time)
                     st.markdown(
                         '<div class="info-box">🔧 CP-SAT הסתיים — שיפור הוגנות/מנוחה.</div>',
                         unsafe_allow_html=True)
@@ -854,22 +934,21 @@ with tab_run:
                 # ── ספירת חוסרים סופית ────────────────────────────
                 dummy_hours_count = sum(
                     1 for t in tasks for si in range(len(t.slots))
-                    for h in range(24) if schedule[t.tid][si][h] == DUMMY_SID
+                    for h in range(num_hours) if schedule[t.tid][si][h] == DUMMY_SID
                 )
 
+                # ── אבחון חוסרים ──────────────────────────────────
+                diagnosis_lines = []
                 if dummy_hours_count > 0:
-                    # ── אבחון: למה יש חוסרים? ──────────────────
-                    diagnosis_lines = []
                     for t in tasks:
                         for si in range(len(t.slots)):
                             req_role = t.slots[si]
                             slot_dummy_hours = [
-                                h for h in range(24)
+                                h for h in range(num_hours)
                                 if schedule[t.tid][si][h] == DUMMY_SID
                             ]
                             if not slot_dummy_hours:
                                 continue
-                            # בדוק כמה חיילים בכלל כשירים לתקן זה
                             eligible_in_principle = [
                                 s for s in soldiers if not s.is_dummy
                                 and t.tid not in s.exempt
@@ -886,18 +965,10 @@ with tab_run:
                             diagnosis_lines.append(
                                 f"• <b>{t.name}</b> — {slot_label}: {len(slot_dummy_hours)} שעות חסרות. {reason}."
                             )
-                    diagnosis_html = "<br>".join(diagnosis_lines)
-                    st.markdown(
-                        f'<div class="warn-box">⚠️ <b>{dummy_hours_count} שעות-סלוט ללא כיסוי</b>'
-                        f' — שובצו לחייל רפאים.<br><br><b>אבחון:</b><br>{diagnosis_html}</div>',
-                        unsafe_allow_html=True)
-                else:
-                    st.markdown(
-                        '<div class="info-box">✅ <b>כיסוי מלא</b> — כל העמדות אויישו!</div>',
-                        unsafe_allow_html=True)
 
-                # ── בניית תוצאה ──────────────────────────────────
-                final_df = build_result_df(soldiers, tasks, schedule)
+                # ── בניית שתי תוצאות ──────────────────────────────
+                final_df = build_result_df(soldiers, tasks, schedule, num_hours)
+                task_df  = build_task_df(soldiers, tasks, schedule, num_hours)
 
                 if len(final_df) == 0:
                     st.markdown(
@@ -905,82 +976,151 @@ with tab_run:
                         unsafe_allow_html=True)
                     st.stop()
 
-                # ── מדדים ─────────────────────────────────────────
+                # ── שמירה ב-session_state ──────────────────────────
                 real_df   = final_df[~final_df["שם"].str.startswith("⚠️")]
                 gap_h     = int(real_df["סך שעות"].max() - real_df["סך שעות"].min())
                 avg_h     = real_df["סך שעות"].mean()
                 avg_sleep = real_df["שעות שינה (22-08)"].mean()
                 badge     = ("✅ מצוין" if gap_h <= 2
                              else ("⚠️ סביר" if gap_h <= 5 else "❗ גבוה"))
+                max_s = real_df[real_df["סך שעות"] == real_df["סך שעות"].max()]["שם"].tolist()
 
-                st.markdown(f"""
-                <div class="metric-row">
-                  <div class="metric-card"><div class="mc-label">חיילים</div>
-                    <div class="mc-value">{len(real_soldiers)}</div>
-                    <div class="mc-sub">{len(tasks)} משימות</div></div>
-                  <div class="metric-card"><div class="mc-label">ממוצע שעות</div>
-                    <div class="mc-value">{avg_h:.1f}</div>
-                    <div class="mc-sub">לחייל</div></div>
-                  <div class="metric-card"><div class="mc-label">פער הוגנות</div>
-                    <div class="mc-value">{gap_h}</div>
-                    <div class="mc-sub">{badge}</div></div>
-                  <div class="metric-card"><div class="mc-label">ממוצע שינה</div>
-                    <div class="mc-value">{avg_sleep:.1f}</div>
-                    <div class="mc-sub">יעד: 7.0</div></div>
-                  <div class="metric-card"><div class="mc-label">שעות חסרות</div>
-                    <div class="mc-value">{"0 ✅" if dummy_hours_count == 0 else f"{dummy_hours_count} ⚠️"}</div>
-                    <div class="mc-sub">{"כיסוי מלא" if dummy_hours_count == 0 else "חסר כוח אדם"}</div></div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                st.markdown("---")
-                st.subheader("📅 לוח השיבוץ הסופי")
-                st.table(final_df)
-                st.download_button("📥 הורד לוח שיבוץ (Excel)",
-                                   data=to_excel_styled(final_df),
-                                   file_name="Final_Shavtzak_v16.xlsx",
-                                   use_container_width=True)
-
-                # ── גרף ──────────────────────────────────────────
-                st.markdown("---")
-                st.subheader("📊 ניתוח עומסים")
-                chart_df = real_df[["שם", "סך שעות", "מדד עצימות"]].copy()
-                fig = px.bar(
-                    chart_df, x="שם", y="סך שעות", color="מדד עצימות",
-                    color_continuous_scale=["#a8d5a2", "#1a3d17"],
-                    title="עומס שעות לחייל", text="סך שעות")
-                fig.update_traces(textposition="outside", marker_line_width=0)
-                fig.update_layout(
-                    plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
-                    font=dict(family="Heebo", size=12),
-                    xaxis=dict(tickangle=-30, title=""),
-                    yaxis=dict(title='שעות סה"כ'),
-                    margin=dict(t=50, b=80, l=30, r=20))
-                st.plotly_chart(fig, use_container_width=True)
-
-                # ── תובנות ────────────────────────────────────────
-                with st.expander("💡 תובנות ופירוט"):
-                    max_s = real_df[real_df["סך שעות"] == real_df["סך שעות"].max()]["שם"].tolist()
-                    st.markdown(f"""
-**שלב גריידי:** שיבץ {len(real_soldiers)} חיילים לפי עומס מינימלי.
-**שיפור CP-SAT:** {"שיפר הוגנות / מנוחה / שינה בתוך 5% מהאופטימום." if use_cpsat else "לא הופעל."}
-**חיילים עמוסים:** {", ".join(max_s)} — {real_df["סך שעות"].max()} שעות.
-**פער הוגנות:** {gap_h} שעות — {"מצוין." if gap_h <= 2 else "מומלץ להוסיף חיילים." if gap_h > 4 else "סביר."}
-**שינה:** ממוצע {avg_sleep:.1f} שעות.
-{"**⚠️ שעות ללא כיסוי:** " + str(dummy_hours_count) + " — הוסף חיילים או קצר מנוחות." if dummy_hours_count > 0 else "**✅ כיסוי מלא** — כל העמדות מאויישות."}
-                    """)
-
-                    if dummy_slots:
-                        st.markdown("**פירוט חוסרים:**")
-                        for task_name, slot, sh, eh in dummy_slots:
-                            st.markdown(f"  • {task_name} — סלוט {slot}, שעות {sh:02d}:00–{eh:02d}:59")
+                st.session_state.result_ready    = True
+                st.session_state.final_df        = final_df
+                st.session_state.task_df         = task_df
+                st.session_state.dummy_hours_count = dummy_hours_count
+                st.session_state.diagnosis_html  = "<br>".join(diagnosis_lines)
+                st.session_state.use_cpsat_flag  = use_cpsat
+                st.session_state.dummy_slots_list = dummy_slots
+                st.session_state.num_soldiers    = len(real_soldiers)
+                st.session_state.num_tasks       = len(tasks)
+                st.session_state.metrics         = {
+                    "gap_h": gap_h, "avg_h": avg_h,
+                    "avg_sleep": avg_sleep, "badge": badge,
+                    "max_s": max_s,
+                    "num_hours": num_hours,
+                }
 
             except Exception:
                 st.markdown(
                     '<div class="error-box">🚨 שגיאה טכנית:</div>',
                     unsafe_allow_html=True)
                 st.code(traceback.format_exc())
-    else:
+
+    # ── הצגת תוצאות (נשמרות עד איפוס ידני) ──────────────────────
+    if st.session_state.result_ready:
+        final_df         = st.session_state.final_df
+        task_df          = st.session_state.task_df
+        dummy_hours_count = st.session_state.dummy_hours_count
+        diagnosis_html   = st.session_state.diagnosis_html
+        use_cpsat        = st.session_state.use_cpsat_flag
+        dummy_slots      = st.session_state.dummy_slots_list
+        m                = st.session_state.metrics
+        real_df          = final_df[~final_df["שם"].str.startswith("⚠️")]
+
+        # ── הודעת כיסוי ───────────────────────────────────────────
+        if dummy_hours_count > 0:
+            st.markdown(
+                f'<div class="warn-box">⚠️ <b>{dummy_hours_count} שעות-סלוט ללא כיסוי</b>'
+                f' — שובצו לחייל רפאים.<br><br><b>אבחון:</b><br>{diagnosis_html}</div>',
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div class="info-box">✅ <b>כיסוי מלא</b> — כל העמדות אויישו!</div>',
+                unsafe_allow_html=True)
+
+        # ── מדדים ─────────────────────────────────────────────────
+        st.markdown(f"""
+        <div class="metric-row">
+          <div class="metric-card"><div class="mc-label">חיילים</div>
+            <div class="mc-value">{st.session_state.num_soldiers}</div>
+            <div class="mc-sub">{st.session_state.num_tasks} משימות</div></div>
+          <div class="metric-card"><div class="mc-label">ממוצע שעות</div>
+            <div class="mc-value">{m['avg_h']:.1f}</div>
+            <div class="mc-sub">לחייל</div></div>
+          <div class="metric-card"><div class="mc-label">פער הוגנות</div>
+            <div class="mc-value">{m['gap_h']}</div>
+            <div class="mc-sub">{m['badge']}</div></div>
+          <div class="metric-card"><div class="mc-label">ממוצע שינה</div>
+            <div class="mc-value">{m['avg_sleep']:.1f}</div>
+            <div class="mc-sub">יעד: 7.0</div></div>
+          <div class="metric-card"><div class="mc-label">שעות חסרות</div>
+            <div class="mc-value">{"0 ✅" if dummy_hours_count == 0 else f"{dummy_hours_count} ⚠️"}</div>
+            <div class="mc-sub">{"כיסוי מלא" if dummy_hours_count == 0 else "חסר כוח אדם"}</div></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── לוח שיבוץ ─────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("📅 לוח השיבוץ — לפי חייל")
+        st.table(final_df)
+
+        st.markdown("---")
+        st.subheader("📋 לוח השיבוץ — לפי משימה")
+        st.table(task_df)
+
+        # ── כפתורי הורדה (שניהם זמינים ביחד) ─────────────────────
+        st.markdown("---")
+        st.markdown("### 📥 הורדת השבצ\"ק")
+        dl_col1, dl_col2, dl_col3 = st.columns(3)
+        mode_label = "יומי" if m.get("num_hours", 24) == 24 else "שבועי"
+        with dl_col1:
+            st.download_button(
+                "👤 הורד לפי חייל (Excel)",
+                data=to_excel_styled(final_df, f'שבצ"ק לפי חייל'),
+                file_name=f"shavtzak_{mode_label}_by_soldier.xlsx",
+                use_container_width=True,
+            )
+        with dl_col2:
+            st.download_button(
+                "📋 הורד לפי משימה (Excel)",
+                data=to_excel_styled(task_df, 'שבצ"ק לפי משימה', include_index=True),
+                file_name=f"shavtzak_{mode_label}_by_task.xlsx",
+                use_container_width=True,
+            )
+        with dl_col3:
+            if st.button("🔄 שיבוץ חדש (איפוס)", use_container_width=True):
+                st.session_state.result_ready = False
+                st.session_state.final_df = None
+                st.session_state.task_df  = None
+                st.rerun()
+
+        # ── גרף ───────────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("📊 ניתוח עומסים")
+        chart_df = real_df[["שם", "סך שעות", "מדד עצימות (1-10)"]].copy()
+        fig = px.bar(
+            chart_df, x="שם", y="סך שעות", color="מדד עצימות (1-10)",
+            color_continuous_scale=["#a8d5a2", "#1a3d17"],
+            title="עומס שעות לחייל", text="סך שעות",
+            range_color=[1, 10])
+        fig.update_traces(textposition="outside", marker_line_width=0)
+        fig.update_layout(
+            plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Heebo", size=12),
+            xaxis=dict(tickangle=-30, title=""),
+            yaxis=dict(title='שעות סה"כ'),
+            coloraxis_colorbar=dict(title="עצימות<br>(1-10)"),
+            margin=dict(t=50, b=80, l=30, r=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ── תובנות ────────────────────────────────────────────────
+        with st.expander("💡 תובנות ופירוט"):
+            st.markdown(f"""
+**שלב גריידי:** שיבץ {st.session_state.num_soldiers} חיילים לפי עומס מינימלי.
+**שיפור CP-SAT:** {"שיפר הוגנות / מנוחה / שינה בתוך 5% מהאופטימום." if use_cpsat else "לא הופעל."}
+**טווח שיבוץ:** {"יומי (24 שעות)" if m.get("num_hours",24)==24 else "שבועי (168 שעות)"}.
+**חיילים עמוסים:** {", ".join(m['max_s'])} — {real_df["סך שעות"].max()} שעות.
+**פער הוגנות:** {m['gap_h']} שעות — {"מצוין." if m['gap_h'] <= 2 else "מומלץ להוסיף חיילים." if m['gap_h'] > 4 else "סביר."}
+**שינה:** ממוצע {m['avg_sleep']:.1f} שעות.
+{"**⚠️ שעות ללא כיסוי:** " + str(dummy_hours_count) + " — הוסף חיילים או קצר מנוחות." if dummy_hours_count > 0 else "**✅ כיסוי מלא** — כל העמדות מאויישות."}
+            """)
+
+            if dummy_slots:
+                st.markdown("**פירוט חוסרים:**")
+                for task_name, slot, sh, eh in dummy_slots:
+                    st.markdown(f"  • {task_name} — סלוט {slot}, שעות {sh:02d}:00–{eh:02d}:59")
+    if not sf or not tf:
         st.markdown("""
         <div class="info-box">
         👆 <b>כדי להתחיל:</b> העלו קובץ חיילים וקובץ משימות.<br>

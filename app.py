@@ -1,4 +1,7 @@
 import io
+import uuid
+import sqlite3
+import datetime
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -7,73 +10,93 @@ import traceback
 from typing import List
 
 # ══════════════════════════════════════════════════════════════════
-# 0. אבטחה — כניסה בקישור UUID בלבד
+# 0. בסיס נתונים — SQLite
+#    שומר היסטוריית שיבוצים. כל משתמש מזוהה ע"י session_id אקראי
+#    שנוצר אוטומטית ונשמר ב-session_state של הדפדפן שלו.
+#    אחרים לא רואים את הנתונים שלו — הם לא יודעים את ה-session_id.
 # ══════════════════════════════════════════════════════════════════
-def _check_access() -> bool:
-    """
-    בודק אם המשתמש מורשה.
-    - מחפש ?token=... ב-URL
-    - משווה מול רשימת tokens ב-st.secrets["tokens"]
-    - אם אין secrets (פיתוח לוקאלי) — מאפשר גישה חופשית
-    """
-    # בסביבת פיתוח לוקאלי — אין secrets, פתח לגמרי
-    try:
-        allowed = st.secrets.get("tokens", None)
-    except Exception:
-        allowed = None
 
-    if allowed is None:
-        # אין secrets → פיתוח לוקאלי, גישה חופשית
-        return True
+DB_PATH = "shavtzak.db"
 
-    # קרא token מה-URL
-    params = st.query_params
-    token  = params.get("token", None)
+def _init_db():
+    """יוצר את טבלת ההיסטוריה אם לא קיימת"""
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS history (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id  TEXT    NOT NULL,
+            created_at  TEXT    NOT NULL,
+            label       TEXT    NOT NULL,
+            num_soldiers INTEGER,
+            num_tasks    INTEGER,
+            dummy_count  INTEGER,
+            gap_hours    INTEGER,
+            mode         TEXT,
+            by_soldier_excel BLOB,
+            by_task_excel    BLOB
+        )
+    """)
+    con.commit()
+    con.close()
 
-    if token is None:
-        return False
+def _save_result(session_id: str, label: str, metrics: dict,
+                 by_soldier: bytes, by_task: bytes):
+    """שומר שיבוץ אחד לבסיס הנתונים"""
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""
+        INSERT INTO history
+          (session_id, created_at, label, num_soldiers, num_tasks,
+           dummy_count, gap_hours, mode, by_soldier_excel, by_task_excel)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, (
+        session_id,
+        datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        label,
+        metrics.get("num_soldiers", 0),
+        metrics.get("num_tasks", 0),
+        metrics.get("dummy_hours_count", 0),
+        metrics.get("gap_h", 0),
+        "יומי" if metrics.get("num_hours", 24) == 24 else "שבועי",
+        by_soldier,
+        by_task,
+    ))
+    con.commit()
+    con.close()
 
-    # allowed יכול להיות list או dict עם keys
-    if isinstance(allowed, dict):
-        return token in allowed
-    if isinstance(allowed, list):
-        return token in allowed
-    # מחרוזת אחת
-    return token == str(allowed)
+def _load_history(session_id: str) -> pd.DataFrame:
+    """טוען את כל השיבוצים של session_id זה"""
+    con = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("""
+        SELECT id, created_at, label, num_soldiers, num_tasks,
+               dummy_count, gap_hours, mode
+        FROM history
+        WHERE session_id = ?
+        ORDER BY id DESC
+    """, con, params=(session_id,))
+    con.close()
+    return df
 
+def _load_excel(row_id: int, col: str) -> bytes:
+    """טוען קובץ Excel ספציפי מהיסטוריה"""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.execute(f"SELECT {col} FROM history WHERE id=?", (row_id,))
+    row = cur.fetchone()
+    con.close()
+    return row[0] if row else None
 
-def _show_access_denied():
-    st.set_page_config(page_title="אין גישה", page_icon="🔒", layout="centered")
-    st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;700;900&display=swap');
-    html,body,div,p{font-family:'Heebo',sans-serif!important;direction:rtl!important;text-align:right!important}
-    .stApp{background:#f2f5f2}
-    .lock-box{background:white;border-radius:20px;padding:60px 40px;
-      max-width:480px;margin:80px auto;text-align:center;
-      box-shadow:0 4px 30px rgba(0,0,0,.1);border:2px solid #dde8dc}
-    .lock-icon{font-size:72px;margin-bottom:20px}
-    .lock-title{font-size:28px;font-weight:900;color:#1a3d17;margin-bottom:12px}
-    .lock-sub{font-size:15px;color:#6a8a67;line-height:1.7}
-    </style>
-    <div class="lock-box">
-      <div class="lock-icon">🔒</div>
-      <div class="lock-title">אין גישה</div>
-      <div class="lock-sub">
-        הגישה למערכת מוגבלת לבעלי קישור ייחודי בלבד.<br><br>
-        פנה למנהל המערכת כדי לקבל קישור אישי.
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
+def _delete_history(session_id: str):
+    """מוחק את כל ההיסטוריה של session זה"""
+    con = sqlite3.connect(DB_PATH)
+    con.execute("DELETE FROM history WHERE session_id=?", (session_id,))
+    con.commit()
+    con.close()
 
-
-# ── בדיקת גישה — ראשונה לפני כל דבר אחר ──────────────────────────
-if not _check_access():
-    _show_access_denied()
-
+# ── אתחול DB + session_id ייחודי לכל משתמש ───────────────────────
+_init_db()
 
 # ── session state init ─────────────────────────────────────────────
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 if "result_ready" not in st.session_state:
     st.session_state.result_ready = False
 if "final_df" not in st.session_state:
@@ -90,6 +113,10 @@ if "use_cpsat_flag" not in st.session_state:
     st.session_state.use_cpsat_flag = True
 if "dummy_slots_list" not in st.session_state:
     st.session_state.dummy_slots_list = []
+if "last_by_soldier" not in st.session_state:
+    st.session_state.last_by_soldier = None
+if "last_by_task" not in st.session_state:
+    st.session_state.last_by_task = None
 
 # ══════════════════════════════════════════════════════════════════
 # 1. עיצוב
@@ -809,9 +836,71 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab_run, tab_guide, tab_templates = st.tabs(["🚀  ביצוע שיבוץ", "📖  מדריך", "📥  תבניות"])
+tab_run, tab_history, tab_guide, tab_templates = st.tabs([
+    "🚀  ביצוע שיבוץ", "📂  היסטוריה", "📖  מדריך", "📥  תבניות"
+])
 
 # ── תבניות ──────────────────────────────────────────────────────
+# ── היסטוריה ────────────────────────────────────────────────────
+with tab_history:
+    st.markdown("### 📂 היסטוריית שיבוצים שלך")
+    st.markdown(
+        '<div class="info-box" style="font-size:13px">כל שיבוץ שתייצר נשמר כאן אוטומטית. '
+        'רק אתה רואה את הרשומות שלך — הן מזוהות לפי הסשן הנוכחי שלך בדפדפן.</div>',
+        unsafe_allow_html=True)
+
+    hist_df = _load_history(st.session_state.session_id)
+
+    if hist_df.empty:
+        st.markdown(
+            '<div class="warn-box">עדיין אין שיבוצים שמורים. '
+            'צור שיבוץ בטאב "ביצוע שיבוץ" והוא יופיע כאן.</div>',
+            unsafe_allow_html=True)
+    else:
+        # שמות עמודות בעברית להצגה
+        display_df = hist_df.rename(columns={
+            "id":            "מספר",
+            "created_at":    "תאריך ושעה",
+            "label":         "שם השיבוץ",
+            "num_soldiers":  "חיילים",
+            "num_tasks":     "משימות",
+            "dummy_count":   "שעות חסרות",
+            "gap_hours":     "פער הוגנות",
+            "mode":          "סוג",
+        })
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.markdown("**הורדת שיבוץ מהיסטוריה:**")
+
+        col_sel, col_dl1, col_dl2 = st.columns([2, 1, 1])
+        with col_sel:
+            options = {f"{row['label']} (#{row['id']})": row['id']
+                       for _, row in hist_df.iterrows()}
+            chosen_label = st.selectbox("בחר שיבוץ", list(options.keys()),
+                                        label_visibility="collapsed")
+            chosen_id = options[chosen_label]
+
+        with col_dl1:
+            xls_soldier = _load_excel(chosen_id, "by_soldier_excel")
+            if xls_soldier:
+                st.download_button("👤 לפי חייל",
+                                   data=xls_soldier,
+                                   file_name=f"shavtzak_{chosen_id}_by_soldier.xlsx",
+                                   use_container_width=True)
+        with col_dl2:
+            xls_task = _load_excel(chosen_id, "by_task_excel")
+            if xls_task:
+                st.download_button("📋 לפי משימה",
+                                   data=xls_task,
+                                   file_name=f"shavtzak_{chosen_id}_by_task.xlsx",
+                                   use_container_width=True)
+
+        st.markdown("---")
+        if st.button("🗑️ מחק את כל ההיסטוריה שלי", type="secondary"):
+            _delete_history(st.session_state.session_id)
+            st.rerun()
+
 with tab_templates:
     s_ex = pd.DataFrame({
         'מספר אישי':  [1001, 1002, 1003, 1004],
@@ -1052,6 +1141,10 @@ with tab_run:
                              else ("⚠️ סביר" if gap_h <= 5 else "❗ גבוה"))
                 max_s = real_df[real_df["סך שעות"] == real_df["סך שעות"].max()]["שם"].tolist()
 
+                # ── בניית קבצי Excel לשמירה ──────────────────────
+                by_soldier_bytes = to_excel_styled(final_df, 'שבצ"ק לפי חייל')
+                by_task_bytes    = to_excel_styled(task_df,  'שבצ"ק לפי משימה')
+
                 st.session_state.result_ready    = True
                 st.session_state.final_df        = final_df
                 st.session_state.task_df         = task_df
@@ -1061,12 +1154,29 @@ with tab_run:
                 st.session_state.dummy_slots_list = dummy_slots
                 st.session_state.num_soldiers    = len(real_soldiers)
                 st.session_state.num_tasks       = len(tasks)
+                st.session_state.last_by_soldier = by_soldier_bytes
+                st.session_state.last_by_task    = by_task_bytes
                 st.session_state.metrics         = {
                     "gap_h": gap_h, "avg_h": avg_h,
                     "avg_sleep": avg_sleep, "badge": badge,
                     "max_s": max_s,
                     "num_hours": num_hours,
+                    "num_soldiers": len(real_soldiers),
+                    "num_tasks": len(tasks),
+                    "dummy_hours_count": dummy_hours_count,
                 }
+
+                # ── שמירה לבסיס הנתונים ───────────────────────────
+                now_label = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+                mode_label = "יומי" if num_hours == 24 else "שבועי"
+                _save_result(
+                    session_id   = st.session_state.session_id,
+                    label        = f"שיבוץ {mode_label} — {now_label}",
+                    metrics      = st.session_state.metrics,
+                    by_soldier   = by_soldier_bytes,
+                    by_task      = by_task_bytes,
+                )
+                st.toast("✅ השיבוץ נשמר בהיסטוריה", icon="💾")
 
             except Exception:
                 st.markdown(

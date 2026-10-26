@@ -6,6 +6,73 @@ from ortools.sat.python import cp_model
 import traceback
 from typing import List
 
+# ══════════════════════════════════════════════════════════════════
+# 0. אבטחה — כניסה בקישור UUID בלבד
+# ══════════════════════════════════════════════════════════════════
+def _check_access() -> bool:
+    """
+    בודק אם המשתמש מורשה.
+    - מחפש ?token=... ב-URL
+    - משווה מול רשימת tokens ב-st.secrets["tokens"]
+    - אם אין secrets (פיתוח לוקאלי) — מאפשר גישה חופשית
+    """
+    # בסביבת פיתוח לוקאלי — אין secrets, פתח לגמרי
+    try:
+        allowed = st.secrets.get("tokens", None)
+    except Exception:
+        allowed = None
+
+    if allowed is None:
+        # אין secrets → פיתוח לוקאלי, גישה חופשית
+        return True
+
+    # קרא token מה-URL
+    params = st.query_params
+    token  = params.get("token", None)
+
+    if token is None:
+        return False
+
+    # allowed יכול להיות list או dict עם keys
+    if isinstance(allowed, dict):
+        return token in allowed
+    if isinstance(allowed, list):
+        return token in allowed
+    # מחרוזת אחת
+    return token == str(allowed)
+
+
+def _show_access_denied():
+    st.set_page_config(page_title="אין גישה", page_icon="🔒", layout="centered")
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@400;700;900&display=swap');
+    html,body,div,p{font-family:'Heebo',sans-serif!important;direction:rtl!important;text-align:right!important}
+    .stApp{background:#f2f5f2}
+    .lock-box{background:white;border-radius:20px;padding:60px 40px;
+      max-width:480px;margin:80px auto;text-align:center;
+      box-shadow:0 4px 30px rgba(0,0,0,.1);border:2px solid #dde8dc}
+    .lock-icon{font-size:72px;margin-bottom:20px}
+    .lock-title{font-size:28px;font-weight:900;color:#1a3d17;margin-bottom:12px}
+    .lock-sub{font-size:15px;color:#6a8a67;line-height:1.7}
+    </style>
+    <div class="lock-box">
+      <div class="lock-icon">🔒</div>
+      <div class="lock-title">אין גישה</div>
+      <div class="lock-sub">
+        הגישה למערכת מוגבלת לבעלי קישור ייחודי בלבד.<br><br>
+        פנה למנהל המערכת כדי לקבל קישור אישי.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
+
+# ── בדיקת גישה — ראשונה לפני כל דבר אחר ──────────────────────────
+if not _check_access():
+    _show_access_denied()
+
+
 # ── session state init ─────────────────────────────────────────────
 if "result_ready" not in st.session_state:
     st.session_state.result_ready = False

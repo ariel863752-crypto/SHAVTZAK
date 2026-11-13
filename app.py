@@ -1,127 +1,43 @@
-import io
-import uuid
-import sqlite3
+"""
+app.py — שבצ"ק: מערכת שיבוץ כוחות
+
+הרצה מקומית:
+    pip install -r requirements.txt
+    streamlit run app.py
+
+מסך המנהל (נתוני שימוש) נפתח רק למשתמש admin. את הסיסמה שלו מגדירים מחוץ לקוד:
+    משתנה סביבה  SHAVTZAK_ADMIN_PASSWORD
+    או ב-Streamlit Cloud: Settings → Secrets →  ADMIN_PASSWORD = "..."
+
+קבצים:  scheduler.py (האלגוריתם) · database.py (בסיס הנתונים) · test_scheduler.py (בדיקות)
+"""
 import datetime
-import streamlit as st
+import io
+import os
+import traceback
+
 import pandas as pd
 import plotly.express as px
-from ortools.sat.python import cp_model
-import traceback
-from typing import List
+import streamlit as st
 
-# ══════════════════════════════════════════════════════════════════
-# 0. בסיס נתונים — SQLite
-#    שומר היסטוריית שיבוצים. כל משתמש מזוהה ע"י session_id אקראי
-#    שנוצר אוטומטית ונשמר ב-session_state של הדפדפן שלו.
-#    אחרים לא רואים את הנתונים שלו — הם לא יודעים את ה-session_id.
-# ══════════════════════════════════════════════════════════════════
+import database as db
+import scheduler as sc
 
-DB_PATH = "shavtzak.db"
-
-def _init_db():
-    """יוצר את טבלת ההיסטוריה אם לא קיימת"""
-    con = sqlite3.connect(DB_PATH)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS history (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id  TEXT    NOT NULL,
-            created_at  TEXT    NOT NULL,
-            label       TEXT    NOT NULL,
-            num_soldiers INTEGER,
-            num_tasks    INTEGER,
-            dummy_count  INTEGER,
-            gap_hours    INTEGER,
-            mode         TEXT,
-            by_soldier_excel BLOB,
-            by_task_excel    BLOB
-        )
-    """)
-    con.commit()
-    con.close()
-
-def _save_result(session_id: str, label: str, metrics: dict,
-                 by_soldier: bytes, by_task: bytes):
-    """שומר שיבוץ אחד לבסיס הנתונים"""
-    con = sqlite3.connect(DB_PATH)
-    con.execute("""
-        INSERT INTO history
-          (session_id, created_at, label, num_soldiers, num_tasks,
-           dummy_count, gap_hours, mode, by_soldier_excel, by_task_excel)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
-    """, (
-        session_id,
-        datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        label,
-        metrics.get("num_soldiers", 0),
-        metrics.get("num_tasks", 0),
-        metrics.get("dummy_hours_count", 0),
-        metrics.get("gap_h", 0),
-        "יומי" if metrics.get("num_hours", 24) == 24 else "שבועי",
-        by_soldier,
-        by_task,
-    ))
-    con.commit()
-    con.close()
-
-def _load_history(session_id: str) -> pd.DataFrame:
-    """טוען את כל השיבוצים של session_id זה"""
-    con = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("""
-        SELECT id, created_at, label, num_soldiers, num_tasks,
-               dummy_count, gap_hours, mode
-        FROM history
-        WHERE session_id = ?
-        ORDER BY id DESC
-    """, con, params=(session_id,))
-    con.close()
-    return df
-
-def _load_excel(row_id: int, col: str) -> bytes:
-    """טוען קובץ Excel ספציפי מהיסטוריה"""
-    con = sqlite3.connect(DB_PATH)
-    cur = con.execute(f"SELECT {col} FROM history WHERE id=?", (row_id,))
-    row = cur.fetchone()
-    con.close()
-    return row[0] if row else None
-
-def _delete_history(session_id: str):
-    """מוחק את כל ההיסטוריה של session זה"""
-    con = sqlite3.connect(DB_PATH)
-    con.execute("DELETE FROM history WHERE session_id=?", (session_id,))
-    con.commit()
-    con.close()
-
-# ── אתחול DB + session_id ייחודי לכל משתמש ───────────────────────
-_init_db()
-
-# ── session state init ─────────────────────────────────────────────
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
-if "result_ready" not in st.session_state:
-    st.session_state.result_ready = False
-if "final_df" not in st.session_state:
-    st.session_state.final_df = None
-if "task_df" not in st.session_state:
-    st.session_state.task_df = None
-if "dummy_hours_count" not in st.session_state:
-    st.session_state.dummy_hours_count = 0
-if "diagnosis_html" not in st.session_state:
-    st.session_state.diagnosis_html = ""
-if "metrics" not in st.session_state:
-    st.session_state.metrics = {}
-if "use_cpsat_flag" not in st.session_state:
-    st.session_state.use_cpsat_flag = True
-if "dummy_slots_list" not in st.session_state:
-    st.session_state.dummy_slots_list = []
-if "last_by_soldier" not in st.session_state:
-    st.session_state.last_by_soldier = None
-if "last_by_task" not in st.session_state:
-    st.session_state.last_by_task = None
-
-# ══════════════════════════════════════════════════════════════════
-# 1. עיצוב
-# ══════════════════════════════════════════════════════════════════
 st.set_page_config(page_title='שבצ"ק חכם', page_icon="🪖", layout="wide")
+
+# רוחב מלא — תואם גם לגרסאות ישנות וגם לחדשות של Streamlit
+_VER = tuple(int(x) for x in st.__version__.split('.')[:2])
+FULL = {'width': 'stretch'} if _VER >= (1, 52) else {'use_container_width': True}
+
+# צבעי המשימות בתרשים (סדר קבוע; משימה תשיעית ומעלה מקבלת אפור)
+TASK_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']
+OTHER_COLOR, SHORT_COLOR, BRAND = '#8a8a86', '#d03b3b', '#2d5a27'
+EVENT_COLORS = {'כניסה': '#2a78d6', 'הרצת שיבוץ': '#eb6834', 'הרשמה': '#1baf7a'}
+
+
+# ══════════════════════════════════════════════════════════════════
+# עיצוב
+# ══════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap');
@@ -133,39 +49,40 @@ html,body{direction:rtl}
 [data-testid="stFileUploader"] label,[data-testid="stFileUploader"] div,
 [data-testid="stSlider"] label,[data-testid="stSelectbox"] label{
   font-family:'Heebo',sans-serif!important;direction:rtl!important;text-align:right!important}
+/* האייקונים של Streamlit הם גופן; בלי השורה הזו הם מוצגים כטקסט ("upload") */
+[data-testid="stIconMaterial"],.material-symbols-rounded{font-family:'Material Symbols Rounded'!important;direction:ltr!important}
 .stApp{background:#f2f5f2}.block-container{padding:2rem 2.5rem 3rem;max-width:1400px}
+button[kind="primary"],[data-testid="stBaseButton-primary"]{background:#2d5a27!important;
+  border-color:#2d5a27!important;color:white!important;font-weight:700!important}
+button[kind="primary"] p,[data-testid="stBaseButton-primary"] p{color:white!important;font-size:17px}
+button[kind="primary"]:hover,[data-testid="stBaseButton-primary"]:hover{background:#1a3d17!important}
 .app-header{background:linear-gradient(135deg,#1a3d17 0%,#2d5a27 60%,#3d7a35 100%);
-  border-radius:16px;padding:30px 35px;margin-bottom:28px;
+  border-radius:16px;padding:26px 32px;margin-bottom:24px;
   box-shadow:0 4px 20px rgba(45,90,39,.25);text-align:right}
-.app-header h1{font-size:clamp(22px,4vw,38px);font-weight:900;color:white;margin:0 0 8px;letter-spacing:-.5px}
+.app-header h1{font-size:clamp(22px,4vw,34px);font-weight:900;color:white;margin:0 0 6px;letter-spacing:-.5px}
 .app-header p{font-size:15px;color:rgba(255,255,255,.88);margin:0}
-[data-testid="stTabs"] [data-baseweb="tab-list"]{flex-direction:row-reverse!important;
-  justify-content:flex-start!important;gap:6px;background:white;border-radius:12px;
-  padding:5px;border:1px solid #dde8dc;margin-bottom:20px}
-[data-testid="stTabs"] [data-baseweb="tab"]{border-radius:8px;font-weight:600;
-  font-size:14px;padding:8px 20px;color:#5a7a57;direction:rtl}
-[data-testid="stTabs"] [aria-selected="true"]{background:#2d5a27!important;color:white!important}
-.metric-row{display:flex;flex-direction:row-reverse;gap:16px;margin:22px 0;flex-wrap:wrap}
-.metric-card{flex:1;min-width:160px;background:white;border-radius:14px;padding:22px;
+[data-testid="stTabs"] [data-baseweb="tab-list"]{gap:10px}
+[data-testid="stTabs"] [data-baseweb="tab"]{font-weight:600;padding:8px 14px;height:auto;white-space:nowrap}
+[data-testid="stTabs"] [data-baseweb="tab"] p{font-size:15px;color:#5a7a57}
+[data-testid="stTabs"] [aria-selected="true"] p{color:#1a3d17!important;font-weight:800}
+/* תרשימים וטבלאות-נתונים מצוירים על canvas/SVG ואינם תומכים בכיוון RTL: בלי זה מספרים נחתכים */
+[data-testid="stDataFrame"],[data-testid="stDataFrame"] *,
+[data-testid="stPlotlyChart"],[data-testid="stPlotlyChart"] *,.js-plotly-plot,.js-plotly-plot *{
+  direction:ltr!important;text-align:left!important}
+[data-testid="stTable"] table{width:100%;border-collapse:collapse;font-size:14px;background:white;direction:rtl}
+[data-testid="stTable"] th{background:#2d5a27!important;color:white!important;padding:9px 12px!important;
+  font-weight:600!important;text-align:right!important}
+[data-testid="stTable"] tbody th{background:#f4f8f3!important;color:#1a3d17!important;
+  border-bottom:1px solid #eef1ee!important}
+[data-testid="stTable"] td{padding:8px 12px!important;border-bottom:1px solid #eef1ee!important;text-align:right!important}
+.metric-row{display:flex;flex-direction:row;gap:16px;margin:18px 0;flex-wrap:wrap}
+.metric-card{flex:1;min-width:150px;background:white;border-radius:14px;padding:20px;
   border:1px solid #dde8dc;box-shadow:0 2px 8px rgba(45,90,39,.07);text-align:right;direction:rtl}
-.mc-label{font-size:11px;color:#7a9a77;font-weight:700;letter-spacing:.8px;margin-bottom:6px}
-.mc-value{font-size:34px;font-weight:900;color:#1a3d17;line-height:1}
-.mc-sub{font-size:12px;color:#a0b89d;margin-top:4px}
-div.stButton>button:first-child{background:linear-gradient(135deg,#2d5a27,#3d7a35)!important;
-  color:white!important;font-weight:700!important;font-size:17px!important;
-  border-radius:10px!important;border:none!important;height:3.4em;width:100%;
-  box-shadow:0 4px 14px rgba(45,90,39,.3);transition:all .18s!important}
-[data-testid="stDownloadButton"]>button{background:#b84d00!important;color:white!important;
-  font-weight:600!important;border-radius:10px!important;border:none!important}
+.mc-label{font-size:12px;color:#5f7d5c;font-weight:700;margin-bottom:6px}
+.mc-value{font-size:32px;font-weight:900;color:#1a3d17;line-height:1}
+.mc-sub{font-size:12px;color:#7d957a;margin-top:6px}
 [data-testid="stFileUploader"]{background:white;border-radius:12px;padding:14px 16px;
   border:2px dashed #c0d8bc;direction:rtl;text-align:right}
-[data-testid="stTable"] table{width:100%;border-collapse:collapse;font-size:12px;
-  background:white;direction:rtl}
-[data-testid="stTable"] th{background:#2d5a27!important;color:white!important;
-  padding:9px 12px!important;font-weight:600!important;text-align:right!important}
-[data-testid="stTable"] td{padding:8px 12px!important;border-bottom:1px solid #f0f0f0!important;
-  text-align:right!important}
-[data-testid="stTable"] tr:nth-child(even) td{background:#f8fcf7!important}
 .info-box{background:#edf5ec;border-right:5px solid #2d5a27;padding:14px 18px;margin:14px 0;
   font-size:14px;color:#1a3d17;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
 .warn-box{background:#fff8e6;border-right:5px solid #e67e22;padding:14px 18px;margin:14px 0;
@@ -176,1131 +93,632 @@ div.stButton>button:first-child{background:linear-gradient(135deg,#2d5a27,#3d7a3
 """, unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════════════
-# 2. מחלקות נתונים
-# ══════════════════════════════════════════════════════════════════
-def parse_time_ranges(val, is_task=True) -> list:
-    """
-    מפרש שעות פעילות — תומך בפורמטים מורכבים.
-    is_task=True  → תא ריק = 24 שעות (משימה פעילה כל היום)
-    is_task=False → תא ריק = רשימה ריקה  (חייל לא חסום בכלל)
-    """
-    if pd.isna(val) or str(val).strip().lower() in ('all', '', 'nan'):
-        return list(range(24)) if is_task else []
-
-    def to_hour(s: str) -> int:
-        """חולץ שעה שלמה מ-'8', '08', '08:30', '8.0'"""
-        s = s.strip()
-        if ':' in s:
-            return int(s.split(':')[0])
-        return int(float(s.replace('.0', '') or '0'))
-
-    res = set()
-    for part in str(val).split(','):
-        part = part.strip()
-        if not part or part.lower() == 'nan':
-            continue
-
-        if '-' in part:
-            ps = part.split('-')
-            start_s = ps[0].strip()
-            end_s   = ps[-1].strip()
-            if start_s and end_s:
-                s = to_hour(start_s)
-                e = to_hour(end_s)
-                if s <= e:
-                    for h in range(s, e + 1):
-                        res.add(h % 24)
-                else:  # מעגלי: 22-6
-                    for h in range(s, 24):
-                        res.add(h)
-                    for h in range(0, e + 1):
-                        res.add(h)
-        else:
-            try:
-                res.add(to_hour(part) % 24)
-            except (ValueError, IndexError):
-                pass
-
-    return sorted(res)
+def small_table(df: pd.DataFrame, limit: int = 40):
+    """טבלה קצרה מוצגת כטבלת HTML (מימין לשמאל); ארוכה — כטבלת נתונים נגללת"""
+    if len(df) <= limit:
+        st.table(df.reset_index(drop=True).set_index(df.columns[0]))
+    else:
+        st.dataframe(df, hide_index=True, **FULL)
 
 
-# ── חייל רפאים (Dummy) ──────────────────────────────────────────
-DUMMY_SID = "__DUMMY__"
-
-
-class Soldier:
-    def __init__(self, s_id, name, restr='', roles='', unavail='', is_dummy=False):
-        self.sid      = str(s_id).replace('.0', '').strip()
-        self.name     = str(name).strip()
-        self.is_dummy = is_dummy
-        self.exempt   = (
-            [int(float(t)) for t in str(restr).split(',')
-             if str(t).strip().replace('.0', '').isdigit()]
-            if pd.notna(restr) and str(restr).strip() not in ('', 'nan') else []
-        )
-        self.roles = (
-            [r.strip() for r in str(roles).split(',') if r.strip()]
-            if pd.notna(roles) and str(roles).strip() not in ('', 'nan') else []
-        )
-        # תיקון: is_task=False → תא ריק = לא חסום כלל (לא 24 שעות!)
-        self.blocked_hours = [] if is_dummy else parse_time_ranges(unavail, is_task=False)
-
-    def can_assign(self, task, shift_hours: list) -> bool:
-        """האם החייל יכול לבצע משימה זו בכל שעות המשמרת?"""
-        if self.is_dummy:
-            return True  # רפאים תמיד יכול
-        if any(h in self.blocked_hours for h in shift_hours):
-            return False
-        if task.tid in self.exempt:
-            return False
-        if any(r in task.block_roles for r in self.roles):
-            return False
-        return True
-
-
-class Task:
-    def __init__(self, t_id, name, req, shift, rest, overlap, hours,
-                 req_roles, intensity, block_roles=''):
-        self.tid       = int(float(t_id))
-        self.name      = str(name).strip()
-        self.req       = int(req)
-        self.shift     = int(shift)   if pd.notna(shift)   else 1
-        self.rest      = int(rest)    if pd.notna(rest)    else 0
-        self.overlap   = str(overlap).strip().lower() == 'true'
-        self.hours     = parse_time_ranges(hours)  # משימה → is_task=True (ברירת מחדל)
-        # עצימות: נורמליזציה ל-1-10
-        raw = int(intensity) if pd.notna(intensity) else 1
-        self.intensity = max(1, min(10, raw))  # clamp 1-10
-        self.block_roles = (
-            [r.strip() for r in str(block_roles).split(',') if r.strip()]
-            if pd.notna(block_roles) and str(block_roles).strip() not in ('', 'nan') else []
-        )
-        parsed = (
-            [r.strip() for r in str(req_roles).split(',')]
-            if pd.notna(req_roles) and str(req_roles).strip() not in ('', 'nan') else []
-        )
-        self.slots = parsed[:]
-        while len(self.slots) < self.req:
-            self.slots.append(None)
-
-    def slot_ok(self, slot_idx: int, soldier: Soldier) -> bool:
-        """האם החייל מתאים לתקן הספציפי (הסמכה)?"""
-        if soldier.is_dummy:
-            return True  # רפאים מתאים לכל תקן
-        req_role = self.slots[slot_idx]
-        if req_role is None:
-            return True
-        return req_role in soldier.roles
-
-    def get_shift_starts(self) -> list:
-        """
-        מחזיר רשימה של שעות-התחלה של משמרות.
-        מזהה בלוקים רצופים בתוך שעות הפעילות.
-        דוגמה: hours=[8,9,10,11,20,21,22,23], shift=4 → [8, 20]
-        """
-        if not self.hours:
-            return []
-        hours_set = set(self.hours)
-        starts = []
-        i = 0
-        sorted_hours = sorted(self.hours)
-        while i < len(sorted_hours):
-            start = sorted_hours[i]
-            # בדוק שיש מספיק שעות רצופות (מודולריות) להשלמת משמרת
-            valid = all((start + k) % 24 in hours_set for k in range(self.shift))
-            if valid:
-                starts.append(start)
-                i += self.shift  # דלג לבלוק הבא
-            else:
-                i += 1
-        return starts
+def box(kind: str, html: str):
+    st.markdown(f'<div class="{kind}-box">{html}</div>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════
-# 3. Excel מעוצב
+# אתחול: בסיס נתונים ומשתמש מנהל
 # ══════════════════════════════════════════════════════════════════
-def to_excel_styled(df: pd.DataFrame, sheet_name='שבצ"ק', include_index=True) -> bytes:
+def _admin_password():
+    pw = os.environ.get('SHAVTZAK_ADMIN_PASSWORD')
+    if pw:
+        return pw
+    try:
+        return st.secrets.get('ADMIN_PASSWORD')
+    except Exception:
+        return None
+
+
+@st.cache_resource
+def _boot():
+    db.init_db()
+    db.ensure_admin(_admin_password())
+    return True
+
+
+_boot()
+st.session_state.setdefault('user', None)
+st.session_state.setdefault('view', None)
+
+
+# ══════════════════════════════════════════════════════════════════
+# תבניות ונתוני דוגמה
+# ══════════════════════════════════════════════════════════════════
+S_COLS = {'personal_id': 'מספר אישי', 'full_name': 'שם מלא', 'exemptions': 'פטורים',
+          'roles': 'הסמכות', 'blocked_hours': 'שעות חסימה'}
+T_COLS = {'task_no': 'מס"ד משימה', 'name': 'שם המשימה', 'required': 'סד"כ נדרש למשימה',
+          'shift_hours': 'משך משמרת', 'rest_hours': 'שעות מנוחה בין משימות',
+          'shared': 'אישור חפיפה בין משימות', 'active_hours': 'שעות פעילות',
+          'required_roles': 'הסמכה נדרשת', 'intensity': 'דירוג עצימות משימה (1-10)',
+          'blocked_roles': 'תפקידים חסומים', 'priority': 'קריטיות (1-10)'}
+D_COLS = {'personal_id': 'מספר אישי', 'task_no': 'מס"ד משימה', 'kind': 'סוג', 'hours': 'שעות'}
+
+
+def demo_rows():
+    names = ['נועם לוי', 'איתי כהן', 'יובל מזרחי', 'עומר פרץ', 'דניאל ביטון', 'רועי אברהם',
+             'אורי פרידמן', 'עידו דהן', 'תומר אזולאי', 'גיא שפירא', 'אלון חדד', 'יונתן גבאי',
+             'ניר סויסה', 'שחר אוחיון', 'עמית קליין', 'מתן רוזן', 'ליאור נחום', 'אביב שלום',
+             'בן וקנין', 'אסף מלכה', 'טל גולן', 'דור ברק', 'יאיר סגל', 'רן אשכנזי']
+    roles = {0: 'מפקד', 6: 'מפקד', 12: 'מפקד', 18: 'מפקד',
+             1: 'נהג', 7: 'נהג', 13: 'נהג', 19: 'נהג', 4: 'נהג,חובש', 10: 'חובש'}
+    blocked = {3: '08:30-12:00', 9: '14:00-18:00', 15: '06:00-10:30'}
+    exempt = {5: '104', 20: '105'}
+    s_rows = [{'personal_id': str(7001 + i), 'full_name': n, 'exemptions': exempt.get(i, ''),
+               'roles': roles.get(i, ''), 'blocked_hours': blocked.get(i, '')}
+              for i, n in enumerate(names)]
+    t = lambda no, name, req, shift, rest, shared, hours, rr, inten, br, pr: {
+        'task_no': no, 'name': name, 'required': req, 'shift_hours': shift, 'rest_hours': rest,
+        'shared': shared, 'active_hours': hours, 'required_roles': rr, 'intensity': inten,
+        'blocked_roles': br, 'priority': pr}
+    t_rows = [
+        t(101, 'ש"ג', 2, 4, 8, False, 'all', '', 6, '', 9),
+        t(102, 'סיור', 3, 6, 8, False, 'all', 'מפקד,נהג', 8, '', 8),
+        t(103, 'תצפית', 1, 3, 6, False, 'all', '', 5, '', 7),
+        t(104, 'מטבח', 2, 7, 4, False, '06:00-20:00', '', 4, 'מפקד', 3),
+        t(105, 'שמירה היקפית', 1, 4, 8, False, '22-6', '', 7, '', 8),
+        t(106, 'כוננות', 4, 24, 0, True, 'all', 'מפקד,נהג,חובש', 1, '', 6),
+    ]
+    return s_rows, t_rows
+
+
+def rows_to_frames(s_rows, t_rows):
+    s_df = pd.DataFrame([{S_COLS[k]: r.get(k, '') for k in S_COLS} for r in s_rows])
+    t_df = pd.DataFrame([{T_COLS[k]: r.get(k, '') for k in T_COLS} for r in t_rows])
+    if not t_df.empty:
+        t_df[T_COLS['shared']] = t_df[T_COLS['shared']].map(lambda v: bool(v) and str(v) not in ('0', 'False'))
+    return s_df, t_df
+
+
+def to_excel(sheets: dict) -> bytes:
+    """כמה טבלאות לקובץ Excel אחד, מימין לשמאל, עם כותרות מעוצבות"""
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='xlsxwriter') as w:
-        df.to_excel(w, index=include_index, sheet_name=sheet_name)
-        wb, ws = w.book, w.sheets[sheet_name]
-        hf = wb.add_format({'bold': True, 'fg_color': '#2d5a27', 'font_color': 'white',
-                             'border': 1, 'align': 'right', 'valign': 'vcenter'})
-        ef = wb.add_format({'fg_color': '#f0f8ef', 'align': 'right'})
-        bf = wb.add_format({'align': 'right'})
-        for ci, cv in enumerate(df.columns):
-            ix = ci + (1 if include_index else 0)
-            ws.write(0, ix, cv, hf)
-            ws.set_column(ix, ix, min(max(df[cv].astype(str).map(len).max(), len(cv)) + 4, 40))
-        for ri in range(1, len(df) + 1):
-            row_fmt = ef if ri % 2 == 0 else bf
-            ws.set_row(ri, None, row_fmt)
+        for name, df in sheets.items():
+            df.to_excel(w, index=False, sheet_name=name)
+            wb, ws = w.book, w.sheets[name]
+            ws.right_to_left()
+            ws.freeze_panes(1, 1)
+            head = wb.add_format({'bold': True, 'fg_color': BRAND, 'font_color': 'white',
+                                  'border': 1, 'align': 'right', 'valign': 'vcenter'})
+            for ci, col in enumerate(df.columns):
+                ws.write(0, ci, col, head)
+                longest = max([len(str(col))] + [len(str(v)) for v in df[col].head(300)])
+                ws.set_column(ci, ci, min(longest + 3, 45))
     return out.getvalue()
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. לב המערכת: גריידי חכם v16
-#
-#  תיקונים לעומת v15:
-#  ✅ תיקון 1: סדר מיון גרידי מדורג נכון
-#     - overlap=False && shift=24 נדחים לסוף (גונבי חיילים)
-#     - overlap=True (כוננות, חפ"ק) נשלחים אחרונים
-#     - תחילה: משימות שדורשות הסמכה ספציפית + req גדול
-#  ✅ תיקון 2: is_free() - overlap=True עדיין בודק busy_hours
-#     לא ניתן לשבץ חייל שכבר בעל overlap=False לאנשהו אחר
-#  ✅ תיקון 3: CP-SAT - אילוץ רציפות משמרת
-#     חייל שמשובץ ל-start_h חייב להיות משובץ לכל shift_hours
+# תרשימים
 # ══════════════════════════════════════════════════════════════════
+def _plot_layout(fig, height):
+    fig.update_layout(
+        height=height, plot_bgcolor='white', paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Heebo', size=13, color='#2b2b28'),
+        margin=dict(t=40, b=40, l=20, r=20),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1, title_text=''),
+        hoverlabel=dict(font_family='Heebo', align='right'))
+    fig.update_xaxes(gridcolor='#ecece8', linecolor='#d9d9d4', zeroline=False)
+    fig.update_yaxes(gridcolor='#ecece8', linecolor='#d9d9d4', zeroline=False)
+    return fig
 
-def greedy_schedule(soldiers: list, tasks: list, num_hours: int = 24):
-    """
-    מחזיר:
-      schedule[tid][slot_idx][h] = sid | DUMMY_SID | None
-      dummy_slots  — רשימת (task_name, slot, sh, eh) שאויישו ע"י רפאים
-      work_hours   — {sid: מספר שעות}
-      intensity_load — {sid: עומס עצימות}
-    """
-    schedule = {
-        t.tid: {si: {h: None for h in range(num_hours)} for si in range(len(t.slots))}
-        for t in tasks
+
+def timeline_chart(rows, roster, day_start):
+    """ציר זמן: שורה לכל חייל, מקטע לכל משמרת. כוננות מוצגת כפס שקוף ברקע."""
+    base = datetime.datetime(2000, 1, 1) + datetime.timedelta(minutes=day_start)
+    seen, label = {}, {}
+    for sid, name in roster:
+        seen[name] = seen.get(name, 0) + 1
+    for sid, name in roster:
+        label[str(sid)] = f'{name} ({sid})' if seen[name] > 1 else name
+    short_label = '⚠️ חוסר כוח אדם'
+
+    recs = []
+    for r in rows:
+        who = label.get(str(r['personal_id']), r['soldier_name']) if r['personal_id'] else short_label
+        recs.append({
+            'חייל': who,
+            'משימה': r['task_name'] if r['personal_id'] else 'חוסר',
+            'התחלה': base + datetime.timedelta(minutes=r['start_min']),
+            'סיום': base + datetime.timedelta(minutes=r['end_min']),
+            'שעות': f"{sc.fmt_clock(r['start_min'], day_start)}–{sc.fmt_clock(r['end_min'], day_start)}",
+            'פירוט': r['task_name'] + (f" · {r['role']}" if r['role'] else ''),
+        })
+    df = pd.DataFrame(recs)
+    if df.empty:
+        return None
+
+    tasks_order, shared_names = [], set()
+    for r in sorted(rows, key=lambda x: (not x['shared'], x['task_no'])):
+        if r['task_name'] not in tasks_order:
+            tasks_order.append(r['task_name'])
+        if r['shared']:
+            shared_names.add(r['task_name'])
+    by_number = sorted({(r['task_no'], r['task_name']) for r in rows})
+    colors = {name: (TASK_COLORS[i] if i < len(TASK_COLORS) else OTHER_COLOR)
+              for i, (_, name) in enumerate(by_number)}
+    colors['חוסר'] = SHORT_COLOR
+
+    y_order = [label[str(sid)] for sid, _ in roster]
+    if (df['חייל'] == short_label).any():
+        y_order.append(short_label)
+
+    fig = px.timeline(
+        df, x_start='התחלה', x_end='סיום', y='חייל', color='משימה',
+        color_discrete_map=colors,
+        category_orders={'חייל': y_order, 'משימה': tasks_order + ['חוסר']},
+        custom_data=['פירוט', 'שעות'])
+    for tr in fig.data:
+        tr.hovertemplate = '<b>%{y}</b><br>%{customdata[0]}<br>%{customdata[1]}<extra></extra>'
+        tr.marker.line = dict(color='white', width=2)
+        if tr.name in shared_names:
+            tr.opacity, tr.width = 0.28, 0.9
+        else:
+            tr.width = 0.62
+    _plot_layout(fig, max(400, 26 * len(y_order) + 150))
+    fig.update_layout(barmode='overlay', margin=dict(t=95, l=130),
+                      legend=dict(orientation='h', yanchor='bottom', y=1.07, xanchor='left', x=0))
+    fig.update_xaxes(tickformat='%H:%M', dtick=2 * 3600 * 1000, side='top', title_text='',
+                     range=[base, base + datetime.timedelta(hours=24)])
+    fig.update_yaxes(title_text='', categoryorder='array', categoryarray=y_order[::-1],
+                     autorange=True, automargin=True, ticksuffix='  ')
+    return fig
+
+
+def load_chart(summary_df):
+    df = summary_df.sort_values('עומס משוקלל', ascending=False)
+    fig = px.bar(df, x='שם', y='עומס משוקלל', custom_data=['שעות במשימות', 'מתוכן בלילה', 'שעות כוננות'])
+    fig.update_traces(
+        marker_color=BRAND, width=0.55,
+        hovertemplate='<b>%{x}</b><br>עומס משוקלל: %{y}<br>שעות במשימות: %{customdata[0]}'
+                      '<br>מתוכן בלילה: %{customdata[1]}<br>כוננות: %{customdata[2]}<extra></extra>')
+    avg = df['עומס משוקלל'].mean()
+    fig.add_hline(y=avg, line_width=1, line_color='#6b6b66',
+                  annotation_text=f'ממוצע {avg:.1f}', annotation_position='top right',
+                  annotation_font_color='#4a4a45')
+    _plot_layout(fig, 380)
+    fig.update_xaxes(title_text='', tickangle=-40)
+    fig.update_yaxes(title_text='עומס משוקלל (שעות × עצימות)')
+    return fig
+
+
+def usage_chart(daily):
+    df = daily[daily['event'].isin(EVENT_COLORS)]
+    if df.empty:
+        return None
+    fig = px.line(df, x='day', y='n', color='event', markers=True, color_discrete_map=EVENT_COLORS,
+                  category_orders={'event': list(EVENT_COLORS)})
+    fig.update_traces(line_width=2, marker_size=8,
+                      hovertemplate='%{x}<br>%{fullData.name}: %{y}<extra></extra>')
+    _plot_layout(fig, 340)
+    fig.update_xaxes(title_text='', type='category')
+    fig.update_yaxes(title_text='מספר פעולות ביום', rangemode='tozero', dtick=None)
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════
+# כניסה והרשמה
+# ══════════════════════════════════════════════════════════════════
+def auth_screen():
+    st.markdown("""
+    <div class="app-header">
+      <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה</h1>
+      <p>בונה שבצ"ק יומי מלא בתוך שניות: כל עמדה מאוישת, מנוחה רצופה לחיילים, וחלוקת עומס הוגנת</p>
+    </div>""", unsafe_allow_html=True)
+    _, mid, _ = st.columns([1, 1.4, 1])
+    with mid:
+        t_in, t_new = st.tabs(["כניסה", "הרשמה"])
+        with t_in:
+            with st.form('login'):
+                u = st.text_input('שם משתמש')
+                p = st.text_input('סיסמה', type='password')
+                if st.form_submit_button('כניסה', **FULL):
+                    user = db.authenticate(u, p)
+                    if user:
+                        st.session_state.user = user
+                        st.rerun()
+                    else:
+                        st.error('שם משתמש או סיסמה שגויים.')
+        with t_new:
+            with st.form('register'):
+                u = st.text_input('שם משתמש (3 תווים לפחות)')
+                unit = st.text_input('שם היחידה / המסגרת')
+                p = st.text_input('סיסמה (6 תווים לפחות)', type='password')
+                p2 = st.text_input('אימות סיסמה', type='password')
+                if st.form_submit_button('יצירת חשבון', **FULL):
+                    if p != p2:
+                        st.error('הסיסמאות אינן זהות.')
+                    else:
+                        user, err = db.create_user(u, p, unit)
+                        if err:
+                            st.error(err)
+                        else:
+                            st.session_state.user = user
+                            st.rerun()
+        box('info', 'הנתונים שתזינו נשמרים בחשבון שלכם בלבד. '
+                    'מומלץ לעבוד עם שמות ומספרים שאינם מזהים חיילים אמיתיים.')
+
+
+if st.session_state.user is None:
+    auth_screen()
+    st.stop()
+
+USER = st.session_state.user
+
+
+# ══════════════════════════════════════════════════════════════════
+# הרצת שיבוץ
+# ══════════════════════════════════════════════════════════════════
+def run_schedule(s_rows, t_rows, d_rows, cfg: sc.Config):
+    soldiers, tasks, directives, warns = sc.build_objects(s_rows, t_rows, d_rows)
+    res = sc.solve_schedule(soldiers, tasks, cfg, directives)
+    m = res['metrics']
+    rows = sc.assignment_rows(soldiers, res['shifts'], res['assign'], cfg)
+    roster = [(s.sid, s.name) for s in soldiers]
+    compare = sc.comparison_table(res['baseline_metrics'], m, len(soldiers))
+    label = 'שיבוץ ' + datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
+    run_id = db.save_run(USER['id'], label, cfg.day_start, res['engine'], len(tasks), m,
+                         res['seconds'], roster, compare.to_dict('records'), rows)
+    db.log_event(USER['id'], 'run',
+                 f"{len(soldiers)} חיילים, {len(tasks)} משימות, כיסוי {m['coverage_pct']:.0f}%")
+    return {
+        'run_id': run_id, 'label': label, 'rows': rows, 'roster': roster,
+        'day_start': cfg.day_start, 'sleep_target': cfg.sleep_target,
+        'num_tasks': len(tasks), 'engine': res['engine'], 'seconds': res['seconds'],
+        'warnings': warns + res['warnings'],
+        'stages': [{k: v for k, v in s.items() if not k.startswith('_')} for s in res['stages']],
+        'compare': compare,
+        'summary': sc.summary_table(m),
+        'violations': sc.violations_table(m, cfg),
+        'shortages': pd.DataFrame(res['shortage_reasons']),
+        'hard': m['hard_violations'],
+        'm': {k: m[k] for k in ('short_minutes', 'coverage_pct', 'full_rest', 'full_night_rest',
+                                'load_gap', 'hours_gap', 'slots_total', 'short_slots')},
+        'n_rest_viol': len(m['rest_violations']),
     }
 
-    # busy_hours: שעות שהחייל עסוק בהן (כולל מנוחה)
-    busy_hours = {s.sid: set() for s in soldiers}
-    busy_hours[DUMMY_SID] = set()
 
-    work_hours      = {s.sid: 0 for s in soldiers}
-    work_hours[DUMMY_SID] = 0
-    intensity_load  = {s.sid: 0 for s in soldiers}
-    intensity_load[DUMMY_SID] = 0
+def render_schedule(rows, roster, day_start, key: str, summary=None, violations=None,
+                    shortages=None, compare=None):
+    """הצגת שבצ"ק: ציר זמן, טבלאות, והורדה. משמש גם את מסך התוצאה וגם את ההיסטוריה."""
+    task_df = sc.task_table(rows, day_start)
+    grid_df = sc.soldier_grid(rows, roster, day_start)
 
-    dummy_slots = []
+    fig = timeline_chart(rows, roster, day_start)
+    if fig is not None:
+        st.plotly_chart(fig, key=f'tl_{key}', **FULL)
+        st.caption('כל שורה היא חייל וכל מקטע הוא משמרת. פס שקוף ברקע הוא כוננות (משימה שיתופית). '
+                   'העמידו את העכבר על מקטע כדי לראות פרטים.')
 
-    def is_free(sid: str, shift_hours: list, new_task_overlap: bool) -> bool:
-        """
-        תיקון קריטי v16:
-        - אם המשימה החדשה היא overlap=True: החייל יכול להיות שם גם אם כבר עסוק
-          אבל רק אם העיסוק הנוכחי הוא גם overlap=True.
-          אם החייל נעול על משימה overlap=False - הוא לא יכול לקבל שום דבר.
-        - אם המשימה החדשה היא overlap=False: החייל חייב להיות חופשי לגמרי.
-        """
-        for h in shift_hours:
-            if h in busy_hours[sid]:
-                return False  # עסוק — לא ניתן לשבץ
-        return True
+    v_grid, v_task = st.tabs(['טבלה לפי חייל', 'טבלה לפי משימה'])
+    with v_grid:
+        st.dataframe(grid_df, hide_index=True, **FULL)
+    with v_task:
+        st.dataframe(task_df, hide_index=True, **FULL)
 
-    def mark_busy(sid: str, shift_hours: list, rest: int, task_end_h: int, is_overlap: bool):
-        """
-        סימון שעות עסוקות.
-        overlap=True: אין סימון busy (חייל יכול להיות בכוננות ועדיין לקבל משימות)
-        overlap=False: סימון busy כולל מנוחה
-        """
-        if not is_overlap:
-            for h in shift_hours:
-                busy_hours[sid].add(h)
-            for i in range(1, rest + 1):
-                busy_hours[sid].add((task_end_h + i) % num_hours)
-
-    # ── סדר מיון מדורג v16 ──────────────────────────────────────
-    # מיון לפי:
-    # 1. overlap=False לפני overlap=True (בלעדיים לפני שיתופיים)
-    # 2. בתוך overlap=False: משימות עם הסמכה נדרשת ראשונות (הן הכי מגבילות)
-    # 3. אחר כך לפי req גדול (הכי הרבה חיילים נדרשים)
-    # 4. אחר כך לפי intensity (חשוב יותר ראשון)
-    # 5. overlap=True (כוננות, חפ"ק) - תמיד אחרונים כי הם לא גונבים חיילים
-
-    def task_sort_key(t):
-        has_required_cert = any(s is not None and s != '' for s in t.slots)
-        # overlap=False ראשון (0), overlap=True אחרון (1)
-        overlap_priority = 1 if t.overlap else 0
-        # בתוך overlap=False: עם הסמכה ראשון (0), בלי הסמכה אחרון (1)
-        cert_priority = 0 if (not t.overlap and has_required_cert) else 1
-        return (overlap_priority, cert_priority, -t.req, -t.intensity, -t.shift)
-
-    sorted_tasks = sorted(tasks, key=task_sort_key)
-
-    for t in sorted_tasks:
-        shift_starts = t.get_shift_starts()
-
-        for slot_idx in range(len(t.slots)):
-            for start_h in shift_starts:
-                shift_hours = [(start_h + i) % num_hours for i in range(t.shift)]
-                end_h       = shift_hours[-1]
-
-                real_candidates = []
-                for s in soldiers:
-                    if s.is_dummy:
-                        continue
-                    if not s.can_assign(t, shift_hours):
-                        continue
-                    if not t.slot_ok(slot_idx, s):
-                        continue
-                    # תיקון v16: is_free תמיד בודק עסוק — גם overlap=True
-                    if not is_free(s.sid, shift_hours, t.overlap):
-                        continue
-                    # ציון: מעדיף חייל שעבד פחות שעות
-                    score = work_hours[s.sid] * 10 + intensity_load[s.sid]
-                    real_candidates.append((score, s.sid, s))
-
-                if real_candidates:
-                    real_candidates.sort(key=lambda x: x[0])
-                    _, chosen_sid, chosen_s = real_candidates[0]
-                    chosen_is_dummy = False
-                else:
-                    chosen_sid      = DUMMY_SID
-                    chosen_is_dummy = True
-
-                for h in shift_hours:
-                    schedule[t.tid][slot_idx][h] = chosen_sid
-
-                if chosen_is_dummy:
-                    dummy_slots.append((t.name, slot_idx + 1, start_h, end_h))
-                else:
-                    work_hours[chosen_sid]     += t.shift
-                    intensity_load[chosen_sid] += t.shift * t.intensity
-                    mark_busy(chosen_sid, shift_hours, t.rest, end_h, t.overlap)
-
-    return schedule, dummy_slots, work_hours, intensity_load
+    sheets = {'לפי משימה': task_df, 'לפי חייל': grid_df}
+    if summary is not None and not summary.empty:
+        sheets['סיכום לחייל'] = summary
+    if violations is not None and not violations.empty:
+        sheets['חריגות לאישור'] = violations
+    if shortages is not None and not shortages.empty:
+        sheets['חוסרים'] = shortages
+    if compare is not None and not compare.empty:
+        sheets['השוואה'] = compare
+    if st.download_button('📥 הורדת השבצ"ק (Excel)', data=to_excel(sheets),
+                          file_name=f'shavtzak_{key}.xlsx', key=f'dl_{key}', **FULL):
+        db.log_event(USER['id'], 'download', key)
 
 
-# ══════════════════════════════════════════════════════════════════
-# 5. בניית DataFrames תוצאה
-# ══════════════════════════════════════════════════════════════════
+def render_result(v):
+    m = v['m']
+    if v['hard']:
+        box('error', '🚨 נמצאה הפרה של אילוץ קשיח — אל תשתמשו בשבצ"ק הזה:<br>' + '<br>'.join(v['hard']))
+    for w in v['warnings']:
+        box('warn', '⚠️ ' + w)
 
-def _intensity_to_score(raw_intensity: int) -> int:
-    """ממיר עצימות גולמית ל-1-10"""
-    return max(1, min(10, raw_intensity))
+    if m['short_minutes'] == 0:
+        box('info', f"✅ <b>כיסוי מלא</b> — כל {m['slots_total']} התקנים מאוישים.")
+    else:
+        box('warn', f"⚠️ <b>{m['short_slots']} תקנים לא אוישו ({m['short_minutes'] / 60:.1f} שעות-עמדה).</b> "
+                    f"אין דרך לאייש אותם בלי להפר אילוץ קשיח (הסמכה, פטור, חסימה אישית או "
+                    f"שתי משימות בלעדיות באותו זמן). הפירוט והסיבה לכל חוסר מופיעים למטה.")
 
-def build_result_df(soldiers: list, tasks: list, schedule: dict,
-                    num_hours: int = 24) -> pd.DataFrame:
-    """DataFrame לפי חייל — שורה לכל חייל, עמודה לכל שעה"""
-    SLEEP_HOURS = set(range(22, 24)) | set(range(0, 9))  # 22:00–08:00
-    hour_labels = [f"{h:02d}:00" for h in range(num_hours)]
+    n = len(v['roster'])
+    st.markdown(f"""
+    <div class="metric-row">
+      <div class="metric-card"><div class="mc-label">כיסוי עמדות</div>
+        <div class="mc-value">{m['coverage_pct']:.0f}%</div>
+        <div class="mc-sub">{n} חיילים · {v['num_tasks']} משימות</div></div>
+      <div class="metric-card"><div class="mc-label">מנוחה רצופה מלאה</div>
+        <div class="mc-value">{m['full_rest']}/{n}</div>
+        <div class="mc-sub">{m['full_night_rest']} מהם בלילה · יעד {sc.fmt_dur(v['sleep_target'])} שעות</div></div>
+      <div class="metric-card"><div class="mc-label">מנוחה קצרה מהנדרש</div>
+        <div class="mc-value">{v['n_rest_viol']}</div>
+        <div class="mc-sub">מקרים בין משמרות</div></div>
+      <div class="metric-card"><div class="mc-label">פער עומס</div>
+        <div class="mc-value">{m['load_gap']:.0f}</div>
+        <div class="mc-sub">בין העמוס ביותר לפנוי ביותר · {m['hours_gap']:.0f} שעות</div></div>
+      <div class="metric-card"><div class="mc-label">זמן חישוב</div>
+        <div class="mc-value">{v['seconds']:.0f}״</div>
+        <div class="mc-sub">מנוע: {v['engine']}</div></div>
+    </div>""", unsafe_allow_html=True)
 
-    rows = []
-    for s in soldiers:
-        if s.is_dummy:
-            continue
-        row       = {"שם": s.name}
-        total     = 0
-        night     = 0
-        intensity = 0
+    if not v['shortages'].empty:
+        st.subheader('❌ תקנים שלא אוישו, והסיבה')
+        small_table(v['shortages'])
 
-        for h in range(num_hours):
-            active = []
-            for t in tasks:
-                for slot_idx in range(len(t.slots)):
-                    assigned = schedule[t.tid][slot_idx][h]
-                    if assigned == s.sid:
-                        active.append(t.name)
-                        if not t.overlap:
-                            if h % 24 in SLEEP_HOURS:
-                                night += 1
-                            intensity += t.intensity
-            row[hour_labels[h]] = " + ".join(active) if active else "—"
-            if active:
-                total += 1
+    st.subheader('📅 השבצ"ק')
+    render_schedule(v['rows'], v['roster'], v['day_start'], key=f"run{v['run_id']}",
+                    summary=v['summary'], violations=v['violations'],
+                    shortages=v['shortages'], compare=v['compare'])
 
-        row["סך שעות"]          = total
-        # מדד עצימות: ממוצע משוקלל מנורמל ל-1-10
-        intensity_score = round(intensity / max(total, 1), 1) if total > 0 else 0
-        intensity_score = max(0.0, min(10.0, intensity_score))
-        row["מדד עצימות (1-10)"] = intensity_score
-        row["שעות שינה (22-08)"] = len(SLEEP_HOURS) - night
-        rows.append(row)
+    st.subheader('🔎 חריגות לאישור המפקד')
+    if v['violations'].empty:
+        box('info', 'אין חריגות: כל חייל מקבל את המנוחה הנדרשת אחרי כל משמרת ומנוחה רצופה מלאה.')
+    else:
+        st.caption('המקומות שבהם המערכת ויתרה על מנוחה כדי שכל עמדה תאויש. '
+                   'כיסוי העמדות תמיד קודם; אלה הפשרות שנדרשו בשבילו.')
+        small_table(v['violations'])
 
-    # שורת "חוסר" — שעות שאויישו ע"י רפאים
-    dummy_row = {"שם": "⚠️ חוסר כוח אדם"}
-    for h in range(num_hours):
-        dummy_slots_h = []
-        for t in tasks:
-            for slot_idx in range(len(t.slots)):
-                if schedule[t.tid][slot_idx][h] == DUMMY_SID:
-                    dummy_slots_h.append(t.name)
-        dummy_row[hour_labels[h]] = "❌ " + " + ".join(dummy_slots_h) if dummy_slots_h else "—"
-    dummy_row["סך שעות"]          = sum(
-        1 for h in range(num_hours)
-        for t in tasks for si in range(len(t.slots))
-        if schedule[t.tid][si][h] == DUMMY_SID
-    )
-    dummy_row["מדד עצימות (1-10)"] = "—"
-    dummy_row["שעות שינה (22-08)"] = "—"
+    st.subheader('⚖️ חלוקת העומס')
+    st.plotly_chart(load_chart(v['summary']), key=f"load{v['run_id']}", **FULL)
+    with st.expander('טבלת סיכום לכל חייל'):
+        st.dataframe(v['summary'], hide_index=True, **FULL)
 
-    has_dummy = any(
-        schedule[t.tid][si][h] == DUMMY_SID
-        for t in tasks for si in range(len(t.slots)) for h in range(num_hours)
-    )
+    st.subheader('📊 לפני ואחרי: שיבוץ בסיסי מול שיבוץ ממוטב')
+    st.caption('"שיבוץ בסיסי" מחקה את הדרך הידנית: עוברים על המשמרות לפי סדר הזמן ומשבצים בכל פעם '
+               'את החייל הפנוי שעבד הכי פחות. "שיבוץ ממוטב" הוא תוצאת האלגוריתם.')
+    small_table(v['compare'])
 
-    df = pd.DataFrame(rows)
-    if has_dummy:
-        df = pd.concat([df, pd.DataFrame([dummy_row])], ignore_index=True)
-
-    df.index = range(1, len(df) + 1)
-    return df
-
-
-def build_task_df(soldiers: list, tasks: list, schedule: dict,
-                  num_hours: int = 24) -> pd.DataFrame:
-    """DataFrame לפי משימה — שורה לכל (משימה, סלוט, שעה), עמודות: שם חייל"""
-    sid_to_name = {s.sid: s.name for s in soldiers if not s.is_dummy}
-    sid_to_name[DUMMY_SID] = "⚠️ חוסר"
-
-    rows = []
-    for t in tasks:
-        for si in range(len(t.slots)):
-            role_label = t.slots[si] or "—"
-            # קבץ שעות רצופות לטווח
-            shift_starts = t.get_shift_starts()
-            for start_h in shift_starts:
-                shift_hours = [(start_h + k) % num_hours for k in range(t.shift)]
-                # מי שובץ לסלוט זה בשעות אלה?
-                assigned_sid = schedule[t.tid][si][shift_hours[0]]
-                assigned_name = sid_to_name.get(assigned_sid, "—") if assigned_sid else "—"
-                end_h = shift_hours[-1]
-                rows.append({
-                    "משימה":          t.name,
-                    "סלוט":          si + 1,
-                    "הסמכה נדרשת":  role_label,
-                    "שעת התחלה":     f"{start_h:02d}:00",
-                    "שעת סיום":      f"{(end_h + 1) % 24:02d}:00",
-                    "חייל משובץ":    assigned_name,
-                    "סטטוס":         "✅ מאויש" if assigned_sid and assigned_sid != DUMMY_SID else "❌ חוסר",
-                    "עצימות (1-10)": t.intensity,
-                })
-
-    df = pd.DataFrame(rows)
-    df.index = range(1, len(df) + 1)
-    return df
+    with st.expander('איך האלגוריתם הגיע לתוצאה'):
+        st.markdown('האופטימיזציה נעשית בשלושה שלבים, לפי סדר עדיפות קשיח. '
+                    'כל שלב ננעל לפני שעוברים לשלב הבא, כך ששלב מאוחר לא יכול לפגוע בשלב שקדם לו.')
+        if v['stages']:
+            small_table(pd.DataFrame(v['stages']))
 
 
 # ══════════════════════════════════════════════════════════════════
-# 6. שיפור CP-SAT (אופציונלי)  v16
+# מסך ראשי
 # ══════════════════════════════════════════════════════════════════
+head_l, head_r = st.columns([5, 1])
+with head_l:
+    st.markdown(f"""
+    <div class="app-header">
+      <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה</h1>
+      <p>שלום {USER['username']}{' · ' + USER['unit_name'] if USER['unit_name'] else ''}</p>
+    </div>""", unsafe_allow_html=True)
+with head_r:
+    st.write('')
+    if st.button('יציאה', **FULL):
+        st.session_state.user = None
+        st.session_state.view = None
+        st.rerun()
 
-def improve_with_cpsat(soldiers: list, tasks: list, schedule: dict,
-                       num_hours: int = 24, time_limit: float = 60.0):
-    """
-    מקבל schedule גריידי ומשפר הוגנות / מנוחה / שינה.
+tab_names = ["🚀  שיבוץ", "📂  היסטוריה", "📖  מדריך", "📥  תבניות"]
+if USER['is_admin']:
+    tab_names.append("🔐  ניהול")
+tabs = st.tabs(tab_names)
+tab_run, tab_history, tab_guide, tab_templates = tabs[:4]
 
-    תיקונים v16:
-    ✅ אילוץ רציפות משמרת: x[s,t,si,h]==1 → x[s,t,si,h+1]==1 לכל שעות המשמרת
-    ✅ ייצוג start_var: משתנה בינארי "האם החייל מתחיל משמרת בשעה זו"
-    ✅ CP-SAT עצמאי — רשאי לתקן dummy slots של הגריידי
-    ✅ אם CP-SAT נכשל לחלוטין — מחזיר את הגריידי ללא שינוי
-    """
-    real_soldiers = [s for s in soldiers if not s.is_dummy]
-    model         = cp_model.CpModel()
+# ── שיבוץ ───────────────────────────────────────────────────────
+with tab_run:
+    saved_s, saved_t = db.load_roster(USER['id'])
 
-    # ── משתני החלטה ──────────────────────────────────────────────
-    # x[s,t,si,h] = 1 אם חייל s עובד בסלוט si של משימה t בשעה h
-    x = {}
-    for s in real_soldiers:
-        for t in tasks:
-            for si in range(len(t.slots)):
-                for h in range(num_hours):
-                    x[s.sid, t.tid, si, h] = model.NewBoolVar(
-                        f"x_{s.sid}_{t.tid}_{si}_{h}")
+    st.markdown('#### 1. נתונים')
+    if saved_s and saved_t:
+        box('info', f'בחשבון שלכם שמורים <b>{len(saved_s)} חיילים</b> ו-<b>{len(saved_t)} משימות</b>. '
+                    f'אפשר להריץ שיבוץ מיד, או להעלות קבצים חדשים שיחליפו אותם.')
+    else:
+        box('info', 'כדי להתחיל, העלו קובץ חיילים וקובץ משימות (יש תבניות בלשונית "תבניות"), '
+                    'או טענו נתוני דוגמה כדי לראות איך המערכת עובדת.')
 
-    # ── hints מהגריידי ───────────────────────────────────────────
-    for s in real_soldiers:
-        for t in tasks:
-            for si in range(len(t.slots)):
-                for h in range(num_hours):
-                    hint = 1 if schedule[t.tid][si][h] == s.sid else 0
-                    model.AddHint(x[s.sid, t.tid, si, h], hint)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        sf = st.file_uploader('קובץ חיילים (xlsx)', type='xlsx', key='sf')
+    with c2:
+        tf = st.file_uploader('קובץ משימות (xlsx)', type='xlsx', key='tf')
+    with c3:
+        df_ = st.file_uploader('הנחיות מפקד (xlsx, לא חובה)', type='xlsx', key='df')
 
-    # ── משתני רפאים ──────────────────────────────────────────────
-    dummy_vars = {}
-    for t in tasks:
-        for si in range(len(t.slots)):
-            for h in range(num_hours):
-                if h in t.hours:
-                    dv = model.NewBoolVar(f"dummy_{t.tid}_{si}_{h}")
-                    dummy_vars[t.tid, si, h] = dv
-                    model.AddHint(dv, 1 if schedule[t.tid][si][h] == DUMMY_SID else 0)
+    if st.button('טעינת נתוני דוגמה (24 חיילים, 6 משימות)'):
+        d_s, d_t = demo_rows()
+        db.save_roster(USER['id'], d_s, d_t)
+        db.log_event(USER['id'], 'demo')
+        st.rerun()
 
-    # ── אילוץ כיסוי: כל שעה פעילה חייבת חייל או רפאים ──────────
-    for t in tasks:
-        for si in range(len(t.slots)):
-            for h in range(num_hours):
-                if h in t.hours:
-                    model.Add(
-                        sum(x[s.sid, t.tid, si, h] for s in real_soldiers)
-                        + dummy_vars[t.tid, si, h] == 1
-                    )
-                else:
-                    for s in real_soldiers:
-                        model.Add(x[s.sid, t.tid, si, h] == 0)
+    st.markdown('#### 2. הגדרות')
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        day_start_h = st.selectbox(
+            'שעת תחילת היממה', list(range(24)), index=6, format_func=lambda h: f'{h:02d}:00',
+            help='השבצ"ק מכסה 24 שעות מהשעה הזו. מומלץ 06:00 או 08:00, כדי שהלילה יישאר רצף אחד '
+                 'ומשימות לילה לא ייחתכו באמצע.')
+    with g2:
+        sleep_h = st.selectbox('יעד מנוחה רצופה לחייל (שעות)', [5, 6, 7, 8], index=2)
+    with g3:
+        time_limit = st.slider('זמן חישוב מרבי (שניות)', 5, 120, 20, 5,
+                               help='החישוב נעצר מוקדם יותר כשאין עוד שיפור. במחלקה רגילה 20 שניות מספיקות.')
 
-    # ── אילוץ רציפות משמרת v16 ─────────────────────────────────
-    # אם חייל עובד בשעה h בסלוט si של משימה t,
-    # הוא חייב לעבוד בכל שעות המשמרת (shift_duration שעות רצופות)
-    # כלומר: x[s,t,si,h] <= x[s,t,si,h+1] ... x[s,t,si,h+shift-1]
-    # אבל הכיוון ההפוך: אם h הוא שעת START של משמרת, אז כל שעות המשמרת=1
-    # מימוש: start_var[s,t,si,start_h] → x[s,t,si,start_h..start_h+shift-1] = 1
-    for t in tasks:
-        shift_starts = t.get_shift_starts()
-        for si in range(len(t.slots)):
-            for s in real_soldiers:
-                # רק שעות שאינן חלק מתחילת משמרת חוקית צריכות להיות 0
-                valid_hours = set()
-                for start_h in shift_starts:
-                    for k in range(t.shift):
-                        valid_hours.add((start_h + k) % num_hours)
+    st.markdown('#### 3. הרצה')
+    if st.button('⚙️ יצירת שבצ"ק', type='primary', **FULL):
+        try:
+            if sf is not None and tf is not None:
+                s_rows, t_rows = sc.rows_from_excel(pd.read_excel(sf), pd.read_excel(tf))
+                db.save_roster(USER['id'], s_rows, t_rows)
+                db.log_event(USER['id'], 'upload', f'{len(s_rows)} חיילים, {len(t_rows)} משימות')
+                s_rows, t_rows = db.load_roster(USER['id'])
+            elif sf is not None or tf is not None:
+                st.error('כדי להחליף את הנתונים השמורים צריך להעלות גם קובץ חיילים וגם קובץ משימות.')
+                st.stop()
+            else:
+                s_rows, t_rows = saved_s, saved_t
+            if not s_rows or not t_rows:
+                st.error('אין נתונים להרצה. העלו קבצים או טענו נתוני דוגמה.')
+                st.stop()
+            d_rows = sc.directives_from_excel(pd.read_excel(df_)) if df_ is not None else []
+            cfg = sc.Config(day_start=day_start_h * 60, sleep_target=sleep_h * 60,
+                            sleep_min=min(4, sleep_h - 1) * 60, time_limit=float(time_limit))
+            with st.spinner('מחשב שיבוץ: כיסוי עמדות ← מנוחה ושינה ← הוגנות...'):
+                st.session_state.view = run_schedule(s_rows, t_rows, d_rows, cfg)
+        except ValueError as e:
+            st.session_state.view = None
+            box('error', f'❌ {e}')
+        except Exception:
+            st.session_state.view = None
+            box('error', '🚨 שגיאה טכנית:')
+            st.code(traceback.format_exc())
 
-                # שעות שאינן חלק ממשמרת חוקית = אפס
-                for h in t.hours:
-                    if h not in valid_hours:
-                        model.Add(x[s.sid, t.tid, si, h] == 0)
+    if st.session_state.view:
+        st.markdown('---')
+        render_result(st.session_state.view)
 
-                # אילוץ רציפות: אם עובד בשעה h שהיא לא start,
-                # אז חייב לעבוד גם ב-h-1
-                for start_h in shift_starts:
-                    shift_hours = [(start_h + k) % num_hours for k in range(t.shift)]
-                    # כל שעות המשמרת חייבות להיות אחד או אפס ביחד
-                    # נדרשת הוגנות: start_var[s,t,si,start_h] → כל shift_hours=1
-                    start_var = model.NewBoolVar(f"start_{s.sid}_{t.tid}_{si}_{start_h}")
-                    # אם start_var=1, כל השעות חייבות=1
-                    for h in shift_hours:
-                        model.Add(x[s.sid, t.tid, si, h] == 1).OnlyEnforceIf(start_var)
-                        model.Add(x[s.sid, t.tid, si, h] == 0).OnlyEnforceIf(start_var.Not())
-
-                    # אם עובד בשעת ה-start, אז start_var=1
-                    model.Add(x[s.sid, t.tid, si, start_h] == start_var)
-
-    # ── אילוצי כשירות ────────────────────────────────────────────
-    for s in real_soldiers:
-        for t in tasks:
-            if t.tid in s.exempt or any(r in t.block_roles for r in s.roles):
-                for si in range(len(t.slots)):
-                    for h in range(num_hours):
-                        model.Add(x[s.sid, t.tid, si, h] == 0)
-                continue
-            for si, req_role in enumerate(t.slots):
-                if req_role and req_role not in s.roles:
-                    for h in range(num_hours):
-                        model.Add(x[s.sid, t.tid, si, h] == 0)
-        for h in s.blocked_hours:
-            for t in tasks:
-                for si in range(len(t.slots)):
-                    model.Add(x[s.sid, t.tid, si, h] == 0)
-
-    # ── אי-השתכפלות: לא שתי משימות overlap=False באותה שעה ──────
-    for s in real_soldiers:
-        for h in range(num_hours):
-            non_overlap_vars = [
-                x[s.sid, t.tid, si, h]
-                for t in tasks if not t.overlap
-                for si in range(len(t.slots))
-            ]
-            if non_overlap_vars:
-                model.Add(sum(non_overlap_vars) <= 1)
-
-    # ── פונקציית מטרה ────────────────────────────────────────────
-    PENALTY_DUMMY    = 100_000
-    PENALTY_REST     =     500
-    PENALTY_NIGHT    =     200
-    PENALTY_FAIRNESS =     100
-
-    penalties = []
-
-    # קנס על רפאים
-    for t in tasks:
-        for si in range(len(t.slots)):
-            for h in range(num_hours):
-                if h in t.hours:
-                    penalties.append(dummy_vars[t.tid, si, h] * PENALTY_DUMMY)
-
-    # הוגנות: מזעור פער בין חייל עמוס לחייל נח
-    total_hours_vars = []
-    for s in real_soldiers:
-        th = model.NewIntVar(0, num_hours * len(tasks), f'th_{s.sid}')
-        model.Add(th == sum(
-            x[s.sid, t.tid, si, h]
-            for t in tasks for si in range(len(t.slots)) for h in range(num_hours)
-        ))
-        total_hours_vars.append(th)
-
-    if len(total_hours_vars) >= 2:
-        max_h = model.NewIntVar(0, 1000, 'max_h')
-        min_h = model.NewIntVar(0, 1000, 'min_h')
-        model.AddMaxEquality(max_h, total_hours_vars)
-        model.AddMinEquality(min_h, total_hours_vars)
-        diff = model.NewIntVar(0, 1000, 'diff')
-        model.Add(diff == max_h - min_h)
-        penalties.append(diff * PENALTY_FAIRNESS)
-
-    # קנס על הפרת מנוחה
-    for s in real_soldiers:
-        for t in tasks:
-            if t.overlap or t.rest == 0:
-                continue
-            shift_starts = t.get_shift_starts()
-            for start_h in shift_starts:
-                worked_in_shift = sum(
-                    x[s.sid, t.tid, si, start_h] for si in range(len(t.slots))
-                )
-                is_working_shift = model.NewBoolVar(
-                    f'is_working_{s.sid}_{t.tid}_{start_h}')
-                model.Add(worked_in_shift >= 1).OnlyEnforceIf(is_working_shift)
-                model.Add(worked_in_shift == 0).OnlyEnforceIf(is_working_shift.Not())
-
-                end_h = (start_h + t.shift - 1) % num_hours
-
-                for r in range(1, t.rest + 1):
-                    rest_h = (end_h + r) % num_hours
-
-                    rest_work = sum(
-                        x[s.sid, t2.tid, si2, rest_h]
-                        for t2 in tasks if not t2.overlap
-                        for si2 in range(len(t2.slots))
-                    )
-                    is_working_in_rest = model.NewBoolVar(
-                        f'work_rest_{s.sid}_{t.tid}_{start_h}_{r}')
-                    model.Add(rest_work >= 1).OnlyEnforceIf(is_working_in_rest)
-                    model.Add(rest_work == 0).OnlyEnforceIf(is_working_in_rest.Not())
-
-                    viol = model.NewBoolVar(
-                        f'rest_viol_{s.sid}_{t.tid}_{start_h}_{r}')
-                    model.AddBoolAnd(
-                        [is_working_shift, is_working_in_rest]
-                    ).OnlyEnforceIf(viol)
-                    model.AddBoolOr(
-                        [is_working_shift.Not(), is_working_in_rest.Not()]
-                    ).OnlyEnforceIf(viol.Not())
-                    penalties.append(viol * PENALTY_REST)
-
-    # קנס על שינה
-    NIGHT_HOURS = list(set(range(22, 24)) | set(range(0, 9)))
-    NIGHT_LIMIT = 4
-    for s in real_soldiers:
-        night_work_vars = [
-            x[s.sid, t.tid, si, h]
-            for t in tasks if not t.overlap
-            for si in range(len(t.slots))
-            for h in NIGHT_HOURS
-        ]
-        if night_work_vars:
-            night_total = model.NewIntVar(0, len(NIGHT_HOURS) * len(tasks), f'night_{s.sid}')
-            model.Add(night_total == sum(night_work_vars))
-            night_excess = model.NewIntVar(0, 100, f'night_exc_{s.sid}')
-            model.Add(night_excess >= night_total - NIGHT_LIMIT)
-            model.Add(night_excess >= 0)
-            penalties.append(night_excess * PENALTY_NIGHT)
-
-    max_penalty = 24 * sum(len(t.slots) for t in tasks) * PENALTY_DUMMY + 500_000
-    total_penalty = model.NewIntVar(0, max_penalty, 'total_penalty')
-    model.Add(total_penalty == sum(penalties))
-    model.Minimize(total_penalty)
-
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds  = time_limit
-    solver.parameters.num_search_workers   = 6
-    solver.parameters.log_search_progress  = False
-    solver.parameters.relative_gap_limit   = 0.05
-    status = solver.Solve(model)
-
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return schedule  # fallback לגריידי
-
-    new_schedule = {
-        t.tid: {si: {h: None for h in range(num_hours)} for si in range(len(t.slots))}
-        for t in tasks
-    }
-    for t in tasks:
-        for si in range(len(t.slots)):
-            for h in range(num_hours):
-                if h not in t.hours:
-                    continue
-                if solver.Value(dummy_vars[t.tid, si, h]) == 1:
-                    new_schedule[t.tid][si][h] = DUMMY_SID
-                else:
-                    assigned = None
-                    for s in real_soldiers:
-                        if solver.Value(x[s.sid, t.tid, si, h]) == 1:
-                            assigned = s.sid
-                            break
-                    new_schedule[t.tid][si][h] = assigned
-
-    return new_schedule
-
-
-# ══════════════════════════════════════════════════════════════════
-# 7. ממשק ראשי
-# ══════════════════════════════════════════════════════════════════
-st.markdown("""
-<div class="app-header">
-  <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה (v17)</h1>
-  <p>גריידי מהיר + CP-SAT חכם · שיבוץ יומי/שבועי · עצימות 1-10 · הורדה בשני פורמטים</p>
-</div>
-""", unsafe_allow_html=True)
-
-tab_run, tab_history, tab_guide, tab_templates = st.tabs([
-    "🚀  ביצוע שיבוץ", "📂  היסטוריה", "📖  מדריך", "📥  תבניות"
-])
-
-# ── תבניות ──────────────────────────────────────────────────────
 # ── היסטוריה ────────────────────────────────────────────────────
 with tab_history:
-    st.markdown("### 📂 היסטוריית שיבוצים שלך")
-    st.markdown(
-        '<div class="info-box" style="font-size:13px">כל שיבוץ שתייצר נשמר כאן אוטומטית. '
-        'רק אתה רואה את הרשומות שלך — הן מזוהות לפי הסשן הנוכחי שלך בדפדפן.</div>',
-        unsafe_allow_html=True)
-
-    hist_df = _load_history(st.session_state.session_id)
-
-    if hist_df.empty:
-        st.markdown(
-            '<div class="warn-box">עדיין אין שיבוצים שמורים. '
-            'צור שיבוץ בטאב "ביצוע שיבוץ" והוא יופיע כאן.</div>',
-            unsafe_allow_html=True)
+    st.markdown('### 📂 השיבוצים שלכם')
+    hist = db.list_runs(USER['id'])
+    if hist.empty:
+        box('warn', 'עדיין אין שיבוצים שמורים. כל שיבוץ שתיצרו נשמר כאן אוטומטית.')
     else:
-        # שמות עמודות בעברית להצגה
-        display_df = hist_df.rename(columns={
-            "id":            "מספר",
-            "created_at":    "תאריך ושעה",
-            "label":         "שם השיבוץ",
-            "num_soldiers":  "חיילים",
-            "num_tasks":     "משימות",
-            "dummy_count":   "שעות חסרות",
-            "gap_hours":     "פער הוגנות",
-            "mode":          "סוג",
-        })
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-        st.markdown("---")
-        st.markdown("**הורדת שיבוץ מהיסטוריה:**")
-
-        col_sel, col_dl1, col_dl2 = st.columns([2, 1, 1])
-        with col_sel:
-            options = {f"{row['label']} (#{row['id']})": row['id']
-                       for _, row in hist_df.iterrows()}
-            chosen_label = st.selectbox("בחר שיבוץ", list(options.keys()),
-                                        label_visibility="collapsed")
-            chosen_id = options[chosen_label]
-
-        with col_dl1:
-            xls_soldier = _load_excel(chosen_id, "by_soldier_excel")
-            if xls_soldier:
-                st.download_button("👤 לפי חייל",
-                                   data=xls_soldier,
-                                   file_name=f"shavtzak_{chosen_id}_by_soldier.xlsx",
-                                   use_container_width=True)
-        with col_dl2:
-            xls_task = _load_excel(chosen_id, "by_task_excel")
-            if xls_task:
-                st.download_button("📋 לפי משימה",
-                                   data=xls_task,
-                                   file_name=f"shavtzak_{chosen_id}_by_task.xlsx",
-                                   use_container_width=True)
-
-        st.markdown("---")
-        if st.button("🗑️ מחק את כל ההיסטוריה שלי", type="secondary"):
-            _delete_history(st.session_state.session_id)
+        st.dataframe(hist.rename(columns={
+            'id': 'מספר', 'created_at': 'נוצר', 'label': 'שם', 'num_soldiers': 'חיילים',
+            'num_tasks': 'משימות', 'short_hours': 'שעות לא מאוישות', 'coverage_pct': 'כיסוי %',
+            'rest_violations': 'חריגות מנוחה', 'full_rest': 'מנוחה מלאה',
+            'load_gap': 'פער עומס', 'solve_seconds': 'זמן חישוב (שנ׳)'}), hide_index=True, **FULL)
+        options = {f"#{r['id']} · {r['label']}": int(r['id']) for _, r in hist.iterrows()}
+        chosen = st.selectbox('הצגת שיבוץ', list(options))
+        run, rows = db.load_run(options[chosen], USER['id'])
+        if run:
+            render_schedule(rows, run['roster'], run['day_start'], key=f"hist{run['id']}",
+                            compare=pd.DataFrame(run['compare']))
+        st.markdown('---')
+        if st.button('🗑️ מחיקת כל ההיסטוריה שלי'):
+            db.delete_runs(USER['id'])
             st.rerun()
-
-with tab_templates:
-    s_ex = pd.DataFrame({
-        'מספר אישי':  [1001, 1002, 1003, 1004],
-        'שם מלא':     ['ישראל ישראלי', 'יוסי כהן', 'אבי לוי', 'רון גל'],
-        'פטורים':     ['', '101', '', ''],
-        'הסמכות':     ['', '', '', ''],
-        'שעות חסימה': ['', '10-14', '', '22-6'],
-    })
-    t_ex = pd.DataFrame({
-        'מס"ד משימה':               [101, 102, 103],
-        'שם המשימה':                ['שמירה', 'סיור', 'כוננות'],
-        'סד"כ נדרש למשימה':        [2, 2, 1],
-        'משך משמרת':                [4, 6, 24],
-        'שעות מנוחה בין משימות':    [8, 8, 0],
-        'אישור חפיפה בין משימות':   [False, False, True],
-        'שעות פעילות':              ['all', 'all', 'all'],
-        'הסמכה נדרשת':              ['', '', ''],
-        'דירוג עצימות משימה (1-10)': [5, 8, 2],
-        'תפקידים חסומים':           ['', '', ''],
-    })
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**👥 תבנית חיילים**")
-        st.dataframe(s_ex, use_container_width=True, hide_index=True)
-        st.download_button("⬇️ הורד תבנית חיילים",
-                           data=to_excel_styled(s_ex, "Soldiers", False),
-                           file_name="Soldiers_v16.xlsx", use_container_width=True)
-    with c2:
-        st.markdown("**📋 תבנית משימות**")
-        st.dataframe(t_ex, use_container_width=True, hide_index=True)
-        st.download_button("⬇️ הורד תבנית משימות",
-                           data=to_excel_styled(t_ex, "Tasks", False),
-                           file_name="Tasks_v16.xlsx", use_container_width=True)
 
 # ── מדריך ───────────────────────────────────────────────────────
 with tab_guide:
     st.markdown("""
-### 📖 מדריך v16
+### איך המערכת מחליטה
 
-#### קובץ חיילים
+המערכת פועלת לפי סדר עדיפות קבוע. שלב מאוחר לעולם לא בא על חשבון שלב שקדם לו.
+
+1. **כיסוי עמדות — מעל הכול.** קודם כול מאיישים כל תקן שאפשר. תקן נשאר ריק רק כשאין שום
+   דרך לאייש אותו בלי להפר אילוץ קשיח. כשאין ברירה, מוותרים קודם על המשימות שהקריטיות שלהן נמוכה.
+2. **מנוחה.** מנוחה אחרי כל משמרת לפי מה שהוגדר למשימה, ובלוק מנוחה רצוף לכל חייל, עדיף בלילה (22:00–06:00).
+3. **הוגנות.** איזון העומס בין החיילים. העומס משוקלל: שעות × עצימות המשימה, ושעת לילה נחשבת 1.5 שעות.
+
+**אילוצים קשיחים (לא מופרים אף פעם):** הסמכה נדרשת · פטורים, חסימות אישיות ותפקידים חסומים ·
+חייל לא נמצא בשתי משימות בלעדיות באותו זמן · חייל לא תופס שני תקנים באותה משמרת · הנחיות מפקד.
+
+**כוננות (משימה שיתופית):** מותרת במקביל לכל משימה אחרת, ואינה נחשבת הפרעה למנוחה.
+
+### איך כותבים שעות
+
+| כותבים | המשמעות |
+|---|---|
+| `8-20` | מ-08:00 עד 20:00 (12 שעות; שעת הסיום אינה כלולה) |
+| `08:30-16:00` | בדיוק מ-08:30 עד 16:00 |
+| `22-6` | מ-22:00 עד 06:00 למחרת (חוצה חצות) |
+| `8-12, 16-20` | שני חלונות נפרדים |
+| `all` או תא ריק | במשימה: כל היממה. בחסימת חייל: תא ריק = אין חסימה |
+
+### קובץ חיילים
+
 | עמודה | הסבר | דוגמה |
 |---|---|---|
-| מספר אישי | מזהה ייחודי | 1001 |
-| שם מלא | שם להצגה | ישראל ישראלי |
-| פטורים | מס"ד משימות חסומות | 101,103 |
-| הסמכות | תפקידים (אם יש) | נהג,מפקד |
-| שעות חסימה | שעות לא זמין | 10-14 / 22-6 / 08:30-16:00 |
+| מספר אישי | מזהה ייחודי | 7001 |
+| שם מלא | שם להצגה | נועם לוי |
+| פטורים | מס"ד של משימות שהחייל פטור מהן | 104, 105 |
+| הסמכות | תפקידים והסמכות | נהג, חובש |
+| שעות חסימה | מתי החייל לא זמין | 08:30-12:00 |
 
-#### קובץ משימות
+### קובץ משימות
+
 | עמודה | הסבר | דוגמה |
 |---|---|---|
 | מס"ד משימה | מזהה | 101 |
-| שם המשימה | שם קצר | שמירה |
-| סד"כ נדרש | כמות חיילים | 3 |
-| משך משמרת | שעות רצופות | 4 |
-| שעות מנוחה | צינון אחרי משמרת | 8 |
-| אישור חפיפה | True/False | False |
-| שעות פעילות | all / 8-20 / 6,7,8 | all |
-| הסמכה נדרשת | תפקיד ספציפי | נהג |
-| דירוג עצימות | 1-10 | 7 |
-| תפקידים חסומים | מי לא יכול | קצין |
+| שם המשימה | שם קצר | ש"ג |
+| סד"כ נדרש למשימה | כמה חיילים בכל משמרת | 2 |
+| משך משמרת | בשעות (אפשר גם 1.5) | 4 |
+| שעות מנוחה בין משימות | מנוחה נדרשת אחרי משמרת | 8 |
+| אישור חפיפה בין משימות | TRUE = כוננות / משימה שיתופית | FALSE |
+| שעות פעילות | מתי המשימה פעילה | all |
+| הסמכה נדרשת | הסמכה לכל תקן; תקנים בלי הסמכה נשארים פתוחים לכולם | מפקד, נהג |
+| דירוג עצימות משימה (1-10) | כמה המשימה קשה; משפיע על חישוב ההוגנות | 7 |
+| תפקידים חסומים | מי לא משובץ למשימה | מפקד |
+| קריטיות (1-10) | לא חובה. כשיש חוסר, משימה קריטית מאוישת קודם | 9 |
+
+### הנחיות מפקד (לא חובה)
+
+קובץ שלישי עם העמודות: **מספר אישי · מס"ד משימה · סוג · שעות**.
+בעמודה "סוג" כותבים `חובה` (החייל חייב לקבל משמרת במשימה הזו) או `אסור` (החייל לא ישובץ אליה).
+העמודה "שעות" מצמצמת את ההנחיה לחלון זמן, למשל `22-2`.
 """)
-    st.markdown("""
-<div class="info-box">
-<b>💡 v16 — שינויים עיקריים (תיקון בעיית "חיילים שלא תפסו עמדות"):</b><br>
-<b>✅ תיקון 1 — סדר שיבוץ גרידי מחדש:</b> משימות עם הסמכה נדרשת (נהג, מפקד) משובצות ראשונות לפני שחיילים "נגנבים" למשימות אחרות.<br>
-<b>✅ תיקון 2 — is_free() מתוקן:</b> כעת בודק תמיד אם החייל עסוק, גם למשימות overlap=True.<br>
-<b>✅ תיקון 3 — רציפות משמרת ב-CP-SAT:</b> חייל שמשובץ לשעת התחלה חייב להיות משובץ לכל שעות המשמרת ברצף.
-</div>
-""", unsafe_allow_html=True)
 
-# ── ביצוע שיבוץ ─────────────────────────────────────────────────
-with tab_run:
-    col_u1, col_u2 = st.columns(2)
-    with col_u1:
-        sf = st.file_uploader("📂 קובץ חיילים (xlsx)", type="xlsx", key="sf")
-    with col_u2:
-        tf = st.file_uploader("📂 קובץ משימות (xlsx)", type="xlsx", key="tf")
+# ── תבניות ──────────────────────────────────────────────────────
+with tab_templates:
+    d_s, d_t = demo_rows()
+    s_ex, t_ex = rows_to_frames(d_s[:6], d_t)
+    dir_ex = pd.DataFrame([{'מספר אישי': 7003, 'מס"ד משימה': 101, 'סוג': 'אסור', 'שעות': ''},
+                           {'מספר אישי': 7002, 'מס"ד משימה': 105, 'סוג': 'חובה', 'שעות': '22-2'}])
+    st.markdown('**👥 תבנית חיילים**')
+    st.dataframe(s_ex, hide_index=True, **FULL)
+    st.download_button('⬇️ הורדת תבנית חיילים', data=to_excel({'Soldiers': s_ex}),
+                       file_name='Soldiers_template.xlsx', key='tpl_s')
+    st.markdown('**📋 תבנית משימות**')
+    st.dataframe(t_ex, hide_index=True, **FULL)
+    st.download_button('⬇️ הורדת תבנית משימות', data=to_excel({'Tasks': t_ex}),
+                       file_name='Tasks_template.xlsx', key='tpl_t')
+    st.markdown('**📌 תבנית הנחיות מפקד (לא חובה)**')
+    st.dataframe(dir_ex, hide_index=True, **FULL)
+    st.download_button('⬇️ הורדת תבנית הנחיות', data=to_excel({'Directives': dir_ex}),
+                       file_name='Directives_template.xlsx', key='tpl_d')
 
-    with st.expander("⚙️ הגדרות מתקדמות"):
-        col_mode, col_cpsat = st.columns(2)
-        with col_mode:
-            sched_mode = st.radio(
-                "טווח שיבוץ",
-                ["📅 יומי (24 שעות)", "📆 שבועי (168 שעות)"],
-                index=0,
-                horizontal=True,
-            )
-            num_hours = 24 if "יומי" in sched_mode else 168
-            if num_hours == 168:
-                st.markdown(
-                    '<div class="warn-box" style="font-size:12px">⚠️ שיבוץ שבועי: '
-                    'CP-SAT עשוי לקחת זמן רב. מומלץ להגביל ל-60 שניות.</div>',
-                    unsafe_allow_html=True)
-        with col_cpsat:
-            use_cpsat  = st.toggle("שיפור CP-SAT אחרי גריידי (משפר הוגנות)", value=True)
-            cpsat_time = st.slider("זמן CP-SAT (שניות)", 10, 120, 45, 5)
-        st.markdown(
-            '<div class="info-box" style="font-size:12px">'
-            'הגריידי <b>תמיד</b> רץ ראשון ומחזיר תוצאה. '
-            'CP-SAT רק משפר הוגנות ומנוחה — לא ישנה כיסוי.</div>',
-            unsafe_allow_html=True)
-
-    if sf and tf:
-        if st.button('⚙️ צור שבצ"ק חכם (v17)', use_container_width=True, key="run_btn"):
-            st.session_state.result_ready = False  # איפוס תוצאה קודמת
-            try:
-                # ── קריאת קבצים ──────────────────────────────────
-                s_df = pd.read_excel(sf)
-                t_df = pd.read_excel(tf)
-
-                def find_col(df, keywords):
-                    for kw in keywords:
-                        matches = [c for c in df.columns if kw in str(c)]
-                        if matches:
-                            return matches[0]
-                    return None
-
-                id_col    = find_col(s_df, ['מספר', 'אישי'])
-                name_col  = find_col(s_df, ['שם'])
-                t_id_col  = find_col(t_df, ['מס"ד', 'מסד'])
-                t_nm_col  = find_col(t_df, ['שם'])
-                t_req_col = find_col(t_df, ['סד"כ', 'נדרש'])
-
-                if not all([id_col, name_col, t_id_col, t_nm_col, t_req_col]):
-                    st.markdown(
-                        '<div class="error-box">❌ לא נמצאו עמודות חובה. '
-                        'ודא שהקבצים לפי התבנית.</div>',
-                        unsafe_allow_html=True)
-                    st.stop()
-
-                s_df = s_df.dropna(subset=[id_col, name_col])
-                t_df = t_df.dropna(subset=[t_id_col, t_nm_col, t_req_col])
-
-                def gcol(df, keys):
-                    return find_col(df, keys)
-
-                shift_col   = gcol(t_df, ['משך'])
-                rest_col    = gcol(t_df, ['מנוחה'])
-                overlap_col = gcol(t_df, ['חפיפה'])
-                hours_col   = gcol(t_df, ['פעילות', 'שעות'])
-                role_col    = gcol(t_df, ['הסמכה'])
-                intense_col = gcol(t_df, ['עצימות', 'דירוג'])
-                block_col   = gcol(t_df, ['חסומים'])
-
-                def gval(row, col, default=''):
-                    return row.get(col, default) if col else default
-
-                soldiers = [
-                    Soldier(r[id_col], r[name_col],
-                            r.get('פטורים', ''), r.get('הסמכות', ''),
-                            r.get('שעות חסימה', ''))
-                    for _, r in s_df.iterrows()
-                ]
-                soldiers.append(Soldier(DUMMY_SID, "⚠️ חוסר", is_dummy=True))
-
-                tasks = [
-                    Task(r[t_id_col], r[t_nm_col], r[t_req_col],
-                         gval(r, shift_col,   1),
-                         gval(r, rest_col,    0),
-                         gval(r, overlap_col, False),
-                         gval(r, hours_col,   'all'),
-                         gval(r, role_col,    ''),
-                         gval(r, intense_col, 1),
-                         gval(r, block_col,   ''))
-                    for _, r in t_df.iterrows()
-                ]
-
-                real_soldiers = [s for s in soldiers if not s.is_dummy]
-                st.info(f"📋 נטענו {len(real_soldiers)} חיילים ו-{len(tasks)} משימות")
-
-                # ── שלב א: גריידי ────────────────────────────────
-                with st.spinner("⚡ שלב 1: שיבוץ גריידי..."):
-                    schedule, dummy_slots, work_h, int_load = greedy_schedule(
-                        soldiers, tasks, num_hours=num_hours)
-
-                # ── שלב ב: CP-SAT ─────────────────────────────────
-                if use_cpsat:
-                    with st.spinner(f"🔧 שלב 2: שיפור CP-SAT ({cpsat_time}ש׳)..."):
-                        schedule = improve_with_cpsat(
-                            soldiers, tasks, schedule,
-                            num_hours=num_hours, time_limit=cpsat_time)
-                    st.markdown(
-                        '<div class="info-box">🔧 CP-SAT הסתיים — שיפור הוגנות/מנוחה.</div>',
-                        unsafe_allow_html=True)
-
-                # ── ספירת חוסרים סופית ────────────────────────────
-                dummy_hours_count = sum(
-                    1 for t in tasks for si in range(len(t.slots))
-                    for h in range(num_hours) if schedule[t.tid][si][h] == DUMMY_SID
-                )
-
-                # ── אבחון חוסרים ──────────────────────────────────
-                diagnosis_lines = []
-                if dummy_hours_count > 0:
-                    for t in tasks:
-                        for si in range(len(t.slots)):
-                            req_role = t.slots[si]
-                            slot_dummy_hours = [
-                                h for h in range(num_hours)
-                                if schedule[t.tid][si][h] == DUMMY_SID
-                            ]
-                            if not slot_dummy_hours:
-                                continue
-                            eligible_in_principle = [
-                                s for s in soldiers if not s.is_dummy
-                                and t.tid not in s.exempt
-                                and not any(r in t.block_roles for r in s.roles)
-                                and (req_role is None or req_role == '' or req_role in s.roles)
-                            ]
-                            if len(eligible_in_principle) == 0:
-                                reason = f"אין חיילים עם הסמכה '{req_role}'" if req_role else "אין חיילים זכאים בכלל"
-                            elif len(eligible_in_principle) < t.req:
-                                reason = f"רק {len(eligible_in_principle)} חיילים כשירים אך נדרשים {t.req}"
-                            else:
-                                reason = f"{len(eligible_in_principle)} חיילים כשירים אך כולם עסוקים/במנוחה"
-                            slot_label = f"תקן {si+1}" + (f" ({req_role})" if req_role else "")
-                            diagnosis_lines.append(
-                                f"• <b>{t.name}</b> — {slot_label}: {len(slot_dummy_hours)} שעות חסרות. {reason}."
-                            )
-
-                # ── בניית שתי תוצאות ──────────────────────────────
-                final_df = build_result_df(soldiers, tasks, schedule, num_hours)
-                task_df  = build_task_df(soldiers, tasks, schedule, num_hours)
-
-                if len(final_df) == 0:
-                    st.markdown(
-                        '<div class="error-box">❌ לא נוצרו שורות — בדוק את קבצי הקלט.</div>',
-                        unsafe_allow_html=True)
-                    st.stop()
-
-                # ── שמירה ב-session_state ──────────────────────────
-                real_df   = final_df[~final_df["שם"].str.startswith("⚠️")]
-                gap_h     = int(real_df["סך שעות"].max() - real_df["סך שעות"].min())
-                avg_h     = real_df["סך שעות"].mean()
-                avg_sleep = real_df["שעות שינה (22-08)"].mean()
-                badge     = ("✅ מצוין" if gap_h <= 2
-                             else ("⚠️ סביר" if gap_h <= 5 else "❗ גבוה"))
-                max_s = real_df[real_df["סך שעות"] == real_df["סך שעות"].max()]["שם"].tolist()
-
-                # ── בניית קבצי Excel לשמירה ──────────────────────
-                by_soldier_bytes = to_excel_styled(final_df, 'שבצ"ק לפי חייל')
-                by_task_bytes    = to_excel_styled(task_df,  'שבצ"ק לפי משימה')
-
-                st.session_state.result_ready    = True
-                st.session_state.final_df        = final_df
-                st.session_state.task_df         = task_df
-                st.session_state.dummy_hours_count = dummy_hours_count
-                st.session_state.diagnosis_html  = "<br>".join(diagnosis_lines)
-                st.session_state.use_cpsat_flag  = use_cpsat
-                st.session_state.dummy_slots_list = dummy_slots
-                st.session_state.num_soldiers    = len(real_soldiers)
-                st.session_state.num_tasks       = len(tasks)
-                st.session_state.last_by_soldier = by_soldier_bytes
-                st.session_state.last_by_task    = by_task_bytes
-                st.session_state.metrics         = {
-                    "gap_h": gap_h, "avg_h": avg_h,
-                    "avg_sleep": avg_sleep, "badge": badge,
-                    "max_s": max_s,
-                    "num_hours": num_hours,
-                    "num_soldiers": len(real_soldiers),
-                    "num_tasks": len(tasks),
-                    "dummy_hours_count": dummy_hours_count,
-                }
-
-                # ── שמירה לבסיס הנתונים ───────────────────────────
-                now_label = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-                mode_label = "יומי" if num_hours == 24 else "שבועי"
-                _save_result(
-                    session_id   = st.session_state.session_id,
-                    label        = f"שיבוץ {mode_label} — {now_label}",
-                    metrics      = st.session_state.metrics,
-                    by_soldier   = by_soldier_bytes,
-                    by_task      = by_task_bytes,
-                )
-                st.toast("✅ השיבוץ נשמר בהיסטוריה", icon="💾")
-
-            except Exception:
-                st.markdown(
-                    '<div class="error-box">🚨 שגיאה טכנית:</div>',
-                    unsafe_allow_html=True)
-                st.code(traceback.format_exc())
-
-    # ── הצגת תוצאות (נשמרות עד איפוס ידני) ──────────────────────
-    if st.session_state.result_ready:
-        final_df         = st.session_state.final_df
-        task_df          = st.session_state.task_df
-        dummy_hours_count = st.session_state.dummy_hours_count
-        diagnosis_html   = st.session_state.diagnosis_html
-        use_cpsat        = st.session_state.use_cpsat_flag
-        dummy_slots      = st.session_state.dummy_slots_list
-        m                = st.session_state.metrics
-        real_df          = final_df[~final_df["שם"].str.startswith("⚠️")]
-
-        # ── הודעת כיסוי ───────────────────────────────────────────
-        if dummy_hours_count > 0:
-            st.markdown(
-                f'<div class="warn-box">⚠️ <b>{dummy_hours_count} שעות-סלוט ללא כיסוי</b>'
-                f' — שובצו לחייל רפאים.<br><br><b>אבחון:</b><br>{diagnosis_html}</div>',
-                unsafe_allow_html=True)
-        else:
-            st.markdown(
-                '<div class="info-box">✅ <b>כיסוי מלא</b> — כל העמדות אויישו!</div>',
-                unsafe_allow_html=True)
-
-        # ── מדדים ─────────────────────────────────────────────────
+# ── ניהול (למנהל המערכת בלבד) ───────────────────────────────────
+if USER['is_admin']:
+    with tabs[4]:
+        st.markdown('### 🔐 נתוני שימוש במערכת')
+        st.caption('המסך הזה מוצג רק למנהל המערכת. משתמשים רגילים רואים רק את הנתונים של עצמם.')
+        ov = db.admin_overview(days=30)
+        t = ov['totals']
         st.markdown(f"""
         <div class="metric-row">
-          <div class="metric-card"><div class="mc-label">חיילים</div>
-            <div class="mc-value">{st.session_state.num_soldiers}</div>
-            <div class="mc-sub">{st.session_state.num_tasks} משימות</div></div>
-          <div class="metric-card"><div class="mc-label">ממוצע שעות</div>
-            <div class="mc-value">{m['avg_h']:.1f}</div>
-            <div class="mc-sub">לחייל</div></div>
-          <div class="metric-card"><div class="mc-label">פער הוגנות</div>
-            <div class="mc-value">{m['gap_h']}</div>
-            <div class="mc-sub">{m['badge']}</div></div>
-          <div class="metric-card"><div class="mc-label">ממוצע שינה</div>
-            <div class="mc-value">{m['avg_sleep']:.1f}</div>
-            <div class="mc-sub">יעד: 7.0</div></div>
-          <div class="metric-card"><div class="mc-label">שעות חסרות</div>
-            <div class="mc-value">{"0 ✅" if dummy_hours_count == 0 else f"{dummy_hours_count} ⚠️"}</div>
-            <div class="mc-sub">{"כיסוי מלא" if dummy_hours_count == 0 else "חסר כוח אדם"}</div></div>
-        </div>
-        """, unsafe_allow_html=True)
+          <div class="metric-card"><div class="mc-label">משתמשים רשומים</div>
+            <div class="mc-value">{t['users']}</div><div class="mc-sub">מאז ההשקה</div></div>
+          <div class="metric-card"><div class="mc-label">פעילים בשבוע האחרון</div>
+            <div class="mc-value">{t['active_week']}</div><div class="mc-sub">משתמשים שונים</div></div>
+          <div class="metric-card"><div class="mc-label">כניסות למערכת</div>
+            <div class="mc-value">{t['logins']}</div><div class="mc-sub">סה"כ</div></div>
+          <div class="metric-card"><div class="mc-label">שיבוצים שנוצרו</div>
+            <div class="mc-value">{t['runs']}</div>
+            <div class="mc-sub">כיסוי ממוצע {t['avg_coverage']:.0f}% · {t['avg_seconds']:.0f} שנ׳ לחישוב</div></div>
+        </div>""", unsafe_allow_html=True)
 
-        # ── לוח שיבוץ ─────────────────────────────────────────────
-        st.markdown("---")
-        st.subheader("📅 לוח השיבוץ — לפי חייל")
-        st.table(final_df)
+        st.markdown('#### פעילות יומית ב-30 הימים האחרונים')
+        fig = usage_chart(ov['daily'])
+        if fig is None:
+            box('warn', 'עדיין אין פעילות של משתמשים.')
+        else:
+            st.plotly_chart(fig, key='usage', **FULL)
+            with st.expander('הנתונים כטבלה'):
+                st.dataframe(ov['daily'].rename(columns={'day': 'תאריך', 'event': 'פעולה', 'n': 'כמות',
+                                                         'users': 'משתמשים שונים'})
+                             [['תאריך', 'פעולה', 'כמות', 'משתמשים שונים']], hide_index=True, **FULL)
 
-        st.markdown("---")
-        st.subheader("📋 לוח השיבוץ — לפי משימה")
-        st.table(task_df)
-
-        # ── כפתורי הורדה (שניהם זמינים ביחד) ─────────────────────
-        st.markdown("---")
-        st.markdown("### 📥 הורדת השבצ\"ק")
-        dl_col1, dl_col2, dl_col3 = st.columns(3)
-        mode_label = "יומי" if m.get("num_hours", 24) == 24 else "שבועי"
-        with dl_col1:
-            st.download_button(
-                "👤 הורד לפי חייל (Excel)",
-                data=to_excel_styled(final_df, f'שבצ"ק לפי חייל'),
-                file_name=f"shavtzak_{mode_label}_by_soldier.xlsx",
-                use_container_width=True,
-            )
-        with dl_col2:
-            st.download_button(
-                "📋 הורד לפי משימה (Excel)",
-                data=to_excel_styled(task_df, 'שבצ"ק לפי משימה', include_index=True),
-                file_name=f"shavtzak_{mode_label}_by_task.xlsx",
-                use_container_width=True,
-            )
-        with dl_col3:
-            if st.button("🔄 שיבוץ חדש (איפוס)", use_container_width=True):
-                st.session_state.result_ready = False
-                st.session_state.final_df = None
-                st.session_state.task_df  = None
-                st.rerun()
-
-        # ── גרף ───────────────────────────────────────────────────
-        st.markdown("---")
-        st.subheader("📊 ניתוח עומסים")
-        chart_df = real_df[["שם", "סך שעות", "מדד עצימות (1-10)"]].copy()
-        fig = px.bar(
-            chart_df, x="שם", y="סך שעות", color="מדד עצימות (1-10)",
-            color_continuous_scale=["#a8d5a2", "#1a3d17"],
-            title="עומס שעות לחייל", text="סך שעות",
-            range_color=[1, 10])
-        fig.update_traces(textposition="outside", marker_line_width=0)
-        fig.update_layout(
-            plot_bgcolor="white", paper_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="Heebo", size=12),
-            xaxis=dict(tickangle=-30, title=""),
-            yaxis=dict(title='שעות סה"כ'),
-            coloraxis_colorbar=dict(title="עצימות<br>(1-10)"),
-            margin=dict(t=50, b=80, l=30, r=20))
-        st.plotly_chart(fig, use_container_width=True)
-
-        # ── תובנות ────────────────────────────────────────────────
-        with st.expander("💡 תובנות ופירוט"):
-            st.markdown(f"""
-**שלב גריידי:** שיבץ {st.session_state.num_soldiers} חיילים לפי עומס מינימלי.
-**שיפור CP-SAT:** {"שיפר הוגנות / מנוחה / שינה בתוך 5% מהאופטימום." if use_cpsat else "לא הופעל."}
-**טווח שיבוץ:** {"יומי (24 שעות)" if m.get("num_hours",24)==24 else "שבועי (168 שעות)"}.
-**חיילים עמוסים:** {", ".join(m['max_s'])} — {real_df["סך שעות"].max()} שעות.
-**פער הוגנות:** {m['gap_h']} שעות — {"מצוין." if m['gap_h'] <= 2 else "מומלץ להוסיף חיילים." if m['gap_h'] > 4 else "סביר."}
-**שינה:** ממוצע {m['avg_sleep']:.1f} שעות.
-{"**⚠️ שעות ללא כיסוי:** " + str(dummy_hours_count) + " — הוסף חיילים או קצר מנוחות." if dummy_hours_count > 0 else "**✅ כיסוי מלא** — כל העמדות מאויישות."}
-            """)
-
-            if dummy_slots:
-                st.markdown("**פירוט חוסרים:**")
-                for task_name, slot, sh, eh in dummy_slots:
-                    st.markdown(f"  • {task_name} — סלוט {slot}, שעות {sh:02d}:00–{eh:02d}:59")
-    if not sf or not tf:
-        st.markdown("""
-        <div class="info-box">
-        👆 <b>כדי להתחיל:</b> העלו קובץ חיילים וקובץ משימות.<br>
-        אין תבניות? לחצו על הטאב <b>תבניות</b>.
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('#### משתמשים')
+        st.dataframe(ov['users'], hide_index=True, **FULL)
+        st.markdown('#### 100 הפעולות האחרונות')
+        st.dataframe(ov['recent'], hide_index=True, **FULL)
+        st.download_button('📥 הורדת נתוני השימוש (Excel)',
+                           data=to_excel({'משתמשים': ov['users'], 'פעילות יומית': ov['daily'],
+                                          'פעולות אחרונות': ov['recent']}),
+                           file_name='usage_report.xlsx', key='usage_dl')

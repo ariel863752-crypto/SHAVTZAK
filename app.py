@@ -119,13 +119,15 @@ def _admin_password():
 
 
 @st.cache_resource
-def _boot():
+def _boot(admin_pw):
+    # הסיסמה היא פרמטר, כך ששינוי שלה ב-Secrets מפעיל את האתחול מחדש
     db.init_db()
-    db.ensure_admin(_admin_password())
+    db.ensure_admin(admin_pw)
     return True
 
 
-_boot()
+_pw = _admin_password()
+_boot(str(_pw) if _pw is not None else None)
 st.session_state.setdefault('user', None)
 st.session_state.setdefault('view', None)
 

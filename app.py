@@ -13,24 +13,22 @@ app.py — שבצ"ק: מערכת שיבוץ כוחות
 קבצים:  scheduler.py (האלגוריתם) · database.py (בסיס הנתונים) · test_scheduler.py (בדיקות)
 """
 import datetime
-import html as html_lib
 import io
 import os
 import traceback
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 from streamlit import config as _st_config
 
 import database as db
 import scheduler as sc
 
-# ── ערכת צבעים בהירה וקבועה, גם אם הדפדפן של המשתמש במצב כהה ─────────
-INK, BOARD, RULE, OLIVE, KHAKI, ALERT = '#1C2620', '#F5F6F3', '#D8DDD4', '#3F5B34', '#ECEDE6', '#B93A2E'
+# המסך נשאר בהיר גם כשהדפדפן של המשתמש במצב כהה (אחרת הצבעים נשברים)
 try:
     _changed = False
-    for _k, _v in {'theme.base': 'light', 'theme.primaryColor': OLIVE, 'theme.backgroundColor': BOARD,
-                   'theme.secondaryBackgroundColor': KHAKI, 'theme.textColor': INK}.items():
+    for _k, _v in {'theme.base': 'light', 'theme.primaryColor': '#2d5a27'}.items():
         if _st_config.get_option(_k) != _v:
             _st_config.set_option(_k, _v)
             _changed = True
@@ -39,164 +37,87 @@ try:
 except Exception:
     pass
 
-st.set_page_config(page_title='שבצ"ק', page_icon='🗓️', layout='wide')
+st.set_page_config(page_title='שבצ"ק חכם', page_icon="🪖", layout="wide")
 
+# רוחב מלא — תואם גם לגרסאות ישנות וגם לחדשות של Streamlit
 _VER = tuple(int(x) for x in st.__version__.split('.')[:2])
 FULL = {'width': 'stretch'} if _VER >= (1, 52) else {'use_container_width': True}
 
-# צבעי המשימות בלוח: סדר קבוע לפי מס"ד המשימה; משימה תשיעית ומעלה מקבלת אפור
+# צבעי המשימות בתרשים (סדר קבוע; משימה תשיעית ומעלה מקבלת אפור)
 TASK_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']
-OTHER_COLOR = '#8a8a86'
+OTHER_COLOR, SHORT_COLOR, BRAND = '#8a8a86', '#d03b3b', '#2d5a27'
 EVENT_COLORS = {'כניסה': '#2a78d6', 'הרצת שיבוץ': '#eb6834', 'הרשמה': '#1baf7a'}
 COOKIE = 'shavtzak_session'
+
 
 # ══════════════════════════════════════════════════════════════════
 # עיצוב
 # ══════════════════════════════════════════════════════════════════
-CSS = """
+st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&display=swap');
-:root{--ink:#1C2620;--soft:#5C6A5F;--board:#F5F6F3;--paper:#FFFFFF;--rule:#D8DDD4;--olive:#3F5B34;
-  --khaki:#ECEDE6;--alert:#B93A2E;--amber:#8A5A00;--night:#E9ECF1;
-  --font:'IBM Plex Sans Hebrew','Heebo','Arial Hebrew',Arial,sans-serif}
-html,body,.stApp{direction:rtl}
-.stApp,.stApp p,.stApp li,.stApp label,.stApp input,.stApp textarea,.stApp button,.stApp select,
-.stApp h1,.stApp h2,.stApp h3,.stApp h4,.stApp table,.stApp summary,
-[data-testid="stMarkdownContainer"],[data-testid="stCaptionContainer"],[data-baseweb="select"] *{
-  font-family:var(--font)!important}
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap');
+html,body{direction:rtl}
+.stApp,[data-testid="stAppViewContainer"],.main,.block-container,
+.stMarkdown,p,span,li,label,div,
+[data-testid="stText"],[data-testid="stMarkdownContainer"],
+[data-testid="stAlert"],[data-testid="stExpander"] summary,
+[data-testid="stFileUploader"] label,[data-testid="stFileUploader"] div,
+[data-testid="stSlider"] label,[data-testid="stSelectbox"] label{
+  font-family:'Heebo',sans-serif!important;direction:rtl!important;text-align:right!important}
+/* האייקונים של Streamlit הם גופן; בלי השורה הזו הם מוצגים כטקסט ("upload") */
 [data-testid="stIconMaterial"],.material-symbols-rounded{font-family:'Material Symbols Rounded'!important;direction:ltr!important}
-.stApp p,.stApp li,.stApp label,.stApp h1,.stApp h2,.stApp h3,.stApp h4,
-[data-testid="stMarkdownContainer"],[data-testid="stCaptionContainer"],[data-testid="stAlert"],
-[data-testid="stExpander"] summary,[data-testid="stFileUploader"]{direction:rtl;text-align:right}
-.block-container{padding:1.2rem 2rem 4rem;max-width:1240px}
-header[data-testid="stHeader"]{display:none!important}
-[data-testid="stToolbar"],[data-testid="stDecoration"],#MainMenu,footer{display:none!important}
-h1,h2,h3{letter-spacing:0;color:var(--ink)}
-.stApp h3{font-size:1.15rem;font-weight:600;margin:0 0 .2rem}
-/* טבלאות-נתונים ותרשימים מצוירים על canvas ואינם תומכים בכיוון RTL */
-[data-testid="stDataFrame"],[data-testid="stDataFrame"] *,[data-testid="stDataEditor"],[data-testid="stDataEditor"] *,
+.stApp{background:#f2f5f2}.block-container{padding:3.6rem 2.5rem 3rem;max-width:1400px}
+button[kind="primary"],[data-testid="stBaseButton-primary"]{background:#2d5a27!important;
+  border-color:#2d5a27!important;color:white!important;font-weight:700!important}
+button[kind="primary"] p,[data-testid="stBaseButton-primary"] p{color:white!important;font-size:17px}
+button[kind="primary"]:hover,[data-testid="stBaseButton-primary"]:hover{background:#1a3d17!important}
+.app-header{background:linear-gradient(135deg,#1a3d17 0%,#2d5a27 60%,#3d7a35 100%);
+  border-radius:16px;padding:26px 32px;margin-bottom:24px;
+  box-shadow:0 4px 20px rgba(45,90,39,.25);text-align:right}
+.app-header h1{font-size:clamp(22px,4vw,34px);font-weight:900;color:white;margin:0 0 6px;letter-spacing:-.5px}
+.app-header p{font-size:15px;color:rgba(255,255,255,.88);margin:0}
+[data-testid="stTabs"] [data-baseweb="tab-list"]{gap:10px}
+[data-testid="stTabs"] [data-baseweb="tab"]{font-weight:600;padding:8px 14px;height:auto;white-space:nowrap}
+[data-testid="stTabs"] [data-baseweb="tab"] p{font-size:15px;color:#5a7a57}
+[data-testid="stTabs"] [aria-selected="true"] p{color:#1a3d17!important;font-weight:800}
+/* תרשימים וטבלאות-נתונים מצוירים על canvas/SVG ואינם תומכים בכיוון RTL: בלי זה מספרים נחתכים */
+[data-testid="stDataFrame"],[data-testid="stDataFrame"] *,
 [data-testid="stPlotlyChart"],[data-testid="stPlotlyChart"] *,.js-plotly-plot,.js-plotly-plot *{
   direction:ltr!important;text-align:left!important}
-
-/* סרגל עליון */
-.bar{display:flex;align-items:baseline;gap:14px;padding:2px 0 10px;border-bottom:2px solid var(--ink)}
-.bar .mark{font-size:1.65rem;font-weight:700;color:var(--ink);line-height:1}
-.bar .who{font-size:.92rem;color:var(--soft)}
-
-/* לשוניות */
-[data-testid="stTabs"] [data-baseweb="tab-list"]{gap:22px;border-bottom:1px solid var(--rule)}
-[data-testid="stTabs"] [data-baseweb="tab"]{padding:10px 2px;height:auto;white-space:nowrap;background:transparent}
-[data-testid="stTabs"] [data-baseweb="tab"] p{font-size:.98rem;font-weight:500;color:var(--soft)}
-[data-testid="stTabs"] [aria-selected="true"] p{color:var(--ink)!important;font-weight:600}
-
-/* כפתורים */
-.stApp button[kind="primary"],[data-testid="stBaseButton-primary"],[data-testid="stFormSubmitButton"] button{
-  background:var(--olive)!important;border:1px solid var(--olive)!important;border-radius:6px!important;min-height:44px}
-.stApp button[kind="primary"] p,[data-testid="stBaseButton-primary"] p,[data-testid="stFormSubmitButton"] button p{
-  color:#fff!important;font-weight:600;font-size:1rem}
-.stApp button[kind="primary"]:hover,[data-testid="stBaseButton-primary"]:hover,
-[data-testid="stFormSubmitButton"] button:hover{background:#2F4627!important}
-.stApp button[kind="secondary"],[data-testid="stBaseButton-secondary"],[data-testid="stDownloadButton"] button{
-  border-radius:6px!important;border:1px solid #B9C1B5!important;background:var(--paper)!important}
-.stApp button:focus-visible{outline:2px solid var(--olive)!important;outline-offset:2px}
-[data-testid="stExpander"] details{border:1px solid var(--rule);border-radius:6px;background:var(--paper)}
-[data-testid="stFileUploader"] section{background:var(--paper);border:1px dashed #B9C1B5;border-radius:6px}
-
-/* הודעות */
-.note{border-inline-start:3px solid var(--olive);background:var(--paper);padding:10px 14px;margin:8px 0;
-  font-size:.95rem;line-height:1.65;color:var(--ink);border-radius:0 4px 4px 0}
-.note.warn{border-color:#C98A00;background:#FFFBF0}
-.note.bad{border-color:var(--alert);background:#FFF6F4}
-.lead{font-size:1.02rem;color:var(--ink);margin:6px 0 2px;line-height:1.6}
-.hint{font-size:.88rem;color:var(--soft);line-height:1.6;margin:2px 0 8px}
-
-/* שורת התוצאה */
-.verdict{font-size:1.5rem;font-weight:700;color:var(--ink);margin:18px 0 10px;line-height:1.3}
-.verdict.bad{color:var(--alert)}
-.facts{display:flex;flex-wrap:wrap;border:1px solid var(--rule);border-radius:6px;background:var(--paper);margin:0 0 6px}
-.fact{flex:1 1 170px;padding:12px 16px;border-inline-start:1px solid var(--rule)}
-.fact:first-child{border-inline-start:none}
-.fact b{display:block;font-size:1.45rem;font-weight:700;color:var(--ink);line-height:1.15;font-variant-numeric:tabular-nums}
-.fact span{font-size:.86rem;color:var(--soft);line-height:1.45;display:block;margin-top:3px}
-.fact.bad b{color:var(--alert)}
-
-/* הלוח */
-.legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:10px 0 8px;font-size:.86rem;color:var(--ink)}
-.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-inline-end:6px;vertical-align:-1px}
-.board-wrap{overflow-x:auto;border:1px solid var(--rule);border-radius:6px;background:var(--paper)}
-.board{min-width:900px;font-variant-numeric:tabular-nums}
-.b-row{display:flex;align-items:stretch;border-top:1px solid #EDF0EA}
-.b-row:first-child{border-top:none}
-.b-row:hover .b-track{background-color:#FAFBF8}
-.b-name{flex:0 0 172px;padding:0 12px;display:flex;align-items:center;gap:6px;font-size:.9rem;font-weight:500;
-  color:var(--ink);background:var(--paper);position:sticky;right:0;z-index:2;border-inline-end:1px solid var(--rule);
-  white-space:nowrap;overflow:hidden}
-.b-name .nm{overflow:hidden;text-overflow:ellipsis;min-width:0}
-.b-name small{flex:0 0 auto;font-weight:400;font-size:.72rem;color:var(--soft);border:1px solid var(--rule);border-radius:10px;padding:0 6px}
-.b-sum{flex:0 0 58px;display:flex;align-items:center;justify-content:center;font-size:.82rem;color:var(--soft);
-  border-inline-start:1px solid var(--rule)}
-.b-track{flex:1 1 auto;position:relative;height:36px;
-  background-image:repeating-linear-gradient(to left,#E7EBE3 0,#E7EBE3 1px,transparent 1px,transparent calc(100% / 12))}
-.b-head .b-track{height:26px;background-image:none}
-.b-head{border-bottom:1px solid var(--rule);background:#FAFBF8}
-.b-head .b-name,.b-head .b-sum{background:#FAFBF8;font-size:.78rem;font-weight:400;color:var(--soft)}
-.tick{position:absolute;top:5px;font-size:.76rem;color:var(--soft);padding-inline-start:4px}
-.night{position:absolute;top:0;bottom:0;background:var(--night);opacity:.75}
-.blk{position:absolute;top:5px;height:26px;box-sizing:border-box;border-radius:3px;padding:0 7px;font-size:.8rem;
-  line-height:26px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  border-inline-start:3px solid;margin-inline-end:2px}
-.stand{position:absolute;bottom:2px;height:2px;border-radius:2px;opacity:.55}
-.b-row.short .b-name{color:var(--alert)}
-.b-row.short .blk{background:#FBE4E0;border-color:var(--alert);color:#7A1F16;font-weight:600}
-
-/* טבלאות HTML */
-table.t{width:100%;border-collapse:collapse;background:var(--paper);font-size:.92rem;direction:rtl;
-  border:1px solid var(--rule);font-variant-numeric:tabular-nums}
-table.t th{text-align:right;font-weight:600;color:var(--soft);font-size:.82rem;padding:8px 12px;
-  border-bottom:1px solid var(--rule);background:#FAFBF8}
-table.t td{text-align:right;padding:8px 12px;border-bottom:1px solid #EDF0EA;color:var(--ink);vertical-align:top;line-height:1.5}
-table.t tr:last-child td{border-bottom:none}
-table.t td.k{font-weight:600;white-space:nowrap}
-table.t td.time{white-space:nowrap;color:var(--soft)}
-table.t td.better{font-weight:700}
-table.t .miss{color:var(--alert);font-weight:600}
-.t-wrap{overflow-x:auto}
-.t-wrap.narrow{max-width:820px}
-
-/* עומס */
-.load{display:grid;grid-template-columns:150px 1fr 150px;gap:4px 12px;align-items:center;font-size:.9rem;
-  background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:14px 16px;font-variant-numeric:tabular-nums}
-.load .bar-bg{position:relative;height:14px;background:#EFF1EC;border-radius:2px}
-.load .bar-fg{position:absolute;right:0;top:0;bottom:0;background:var(--olive);border-radius:2px 0 0 2px}
-.load .avg{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink)}
-.load .v{color:var(--soft);font-size:.84rem;white-space:nowrap}
-.load .v b{color:var(--ink);font-weight:500}
-
-/* מסך כניסה */
-.hello{margin:9vh 0 18px}
-.hello h1{font-size:2.3rem;font-weight:700;margin:0 0 8px;color:var(--ink)}
-.hello p{font-size:1.05rem;color:var(--soft);line-height:1.7;margin:0}
-@media (max-width:640px){.block-container{padding:1rem .9rem 3rem}.verdict{font-size:1.25rem}
-  .b-name{flex-basis:118px;font-size:.82rem}.b-name small{display:none}.load{grid-template-columns:92px 1fr 118px;padding:10px}}
+[data-testid="stTable"] table{width:100%;border-collapse:collapse;font-size:14px;background:white;direction:rtl}
+[data-testid="stTable"] th{background:#2d5a27!important;color:white!important;padding:9px 12px!important;
+  font-weight:600!important;text-align:right!important}
+[data-testid="stTable"] tbody th{background:#f4f8f3!important;color:#1a3d17!important;
+  border-bottom:1px solid #eef1ee!important}
+[data-testid="stTable"] td{padding:8px 12px!important;border-bottom:1px solid #eef1ee!important;text-align:right!important}
+.metric-row{display:flex;flex-direction:row;gap:16px;margin:18px 0;flex-wrap:wrap}
+.metric-card{flex:1;min-width:150px;background:white;border-radius:14px;padding:20px;
+  border:1px solid #dde8dc;box-shadow:0 2px 8px rgba(45,90,39,.07);text-align:right;direction:rtl}
+.mc-label{font-size:12px;color:#5f7d5c;font-weight:700;margin-bottom:6px}
+.mc-value{font-size:32px;font-weight:900;color:#1a3d17;line-height:1}
+.mc-sub{font-size:12px;color:#7d957a;margin-top:6px}
+[data-testid="stFileUploader"]{background:white;border-radius:12px;padding:14px 16px;
+  border:2px dashed #c0d8bc;direction:rtl;text-align:right}
+.info-box{background:#edf5ec;border-right:5px solid #2d5a27;padding:14px 18px;margin:14px 0;
+  font-size:14px;color:#1a3d17;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
+.warn-box{background:#fff8e6;border-right:5px solid #e67e22;padding:14px 18px;margin:14px 0;
+  font-size:14px;color:#7a4500;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
+.error-box{background:#fdecea;border-right:5px solid #c0392b;padding:14px 18px;margin:14px 0;
+  font-size:14px;color:#7a0010;line-height:1.8;direction:rtl;text-align:right;border-radius:0 10px 10px 0}
 </style>
-"""
-st.markdown(CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 
-def html(body: str):
-    """HTML גולמי. בגרסאות ישנות של Streamlit נופלים חזרה ל-markdown."""
-    if hasattr(st, 'html'):
-        st.html(body)
+def small_table(df: pd.DataFrame, limit: int = 40):
+    """טבלה קצרה מוצגת כטבלת HTML (מימין לשמאל); ארוכה — כטבלת נתונים נגללת"""
+    if len(df) <= limit:
+        st.table(df.reset_index(drop=True).set_index(df.columns[0]))
     else:
-        st.markdown(body, unsafe_allow_html=True)
+        st.dataframe(df, hide_index=True, **FULL)
 
 
-def esc(v) -> str:
-    return html_lib.escape('' if v is None else str(v), quote=True)
-
-
-def note(text: str, kind: str = ''):
-    html(f'<div class="note {kind}">{text}</div>')
+def box(kind: str, html: str):
+    st.markdown(f'<div class="{kind}-box">{html}</div>', unsafe_allow_html=True)
 
 
 def run_js(code: str):
@@ -209,26 +130,6 @@ def run_js(code: str):
                             height=0)
         except Exception:
             pass
-
-
-def span(a: int, b: int, day_start: int) -> str:
-    """טווח שעות שמוצג תמיד משמאל לימין (06:00–10:00), גם בתוך טקסט עברי"""
-    return f'<span dir="ltr">{sc.fmt_clock(a, day_start)}–{sc.fmt_clock(b, day_start)}</span>'
-
-
-def html_table(df: pd.DataFrame, key_col: int = 0, bold_col=None, narrow=False, code_key=False) -> str:
-    head = ''.join(f'<th>{esc(c)}</th>' for c in df.columns)
-    body = ''
-    for _, r in df.iterrows():
-        cells = ''
-        for i, c in enumerate(df.columns):
-            cls = 'k' if i == key_col else ('better' if c == bold_col else '')
-            text = esc(r[c])
-            if code_key and i == key_col:       # דוגמת קלט: מוצגת משמאל לימין, כמו שמקלידים אותה
-                text = f'<span dir="ltr">{text}</span>'
-            cells += f'<td class="{cls}">{text}</td>'
-        body += f'<tr>{cells}</tr>'
-    return f'<div class="t-wrap{" narrow" if narrow else ""}"><table class="t"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -265,7 +166,6 @@ except Exception as e:
 ss = st.session_state
 ss.setdefault('user', None)
 ss.setdefault('view', None)
-ss.setdefault('ed_ver', 0)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -278,7 +178,6 @@ T_COLS = {'task_no': 'מס"ד משימה', 'name': 'שם המשימה', 'require
           'shared': 'אישור חפיפה בין משימות', 'active_hours': 'שעות פעילות',
           'required_roles': 'הסמכה נדרשת', 'intensity': 'דירוג עצימות משימה (1-10)',
           'blocked_roles': 'תפקידים חסומים', 'priority': 'קריטיות (1-10)'}
-D_COLS = ['חייל', 'משימה', 'הנחיה', 'שעות (לא חובה)']
 
 
 def demo_rows():
@@ -308,51 +207,16 @@ def demo_rows():
     return s_rows, t_rows
 
 
-def _filled(v) -> bool:
-    """האם בתא יש ערך (ולא None / NaN / מחרוזת ריקה)"""
-    if v is None or v is pd.NA:
-        return False
-    if isinstance(v, float) and v != v:
-        return False
-    return str(v).strip().lower() not in ('', 'none', 'nan', '<na>')
-
-
-def _clean(df: pd.DataFrame) -> pd.DataFrame:
-    """טבלה שנערכה באתר → ערכים רגילים, עם None בתאים ריקים"""
-    out = df.astype(object)
-    return out.apply(lambda col: col.map(lambda v: v if _filled(v) else None))
-
-
-def _col(kind, label=None, **kw):
-    """הגדרת עמודה בטבלת עריכה. בגרסאות ישנות של Streamlit אין קיבוע עמודות, אז מוותרים עליו."""
-    try:
-        return kind(label, **kw)
-    except TypeError:
-        kw.pop('pinned', None)
-        return kind(label, **kw)
-
-
-def _is_true(v) -> bool:
-    return v is True or str(v).strip().lower() in ('true', '1', '1.0', 'כן')
-
-
 def rows_to_frames(s_rows, t_rows):
-    """שורות מבסיס הנתונים → טבלאות בעמודות העבריות של התבנית"""
-    s_df = pd.DataFrame([{S_COLS[k]: r.get(k, '') for k in S_COLS} for r in s_rows],
-                        columns=list(S_COLS.values())).astype(str)
-    t_df = pd.DataFrame([{T_COLS[k]: r.get(k, '') for k in T_COLS} for r in t_rows],
-                        columns=list(T_COLS.values()))
-    t_df[T_COLS['shared']] = t_df[T_COLS['shared']].map(_is_true).astype(bool)
-    for k in ('task_no', 'required', 'intensity', 'priority'):
-        t_df[T_COLS[k]] = pd.to_numeric(t_df[T_COLS[k]], errors='coerce').astype('Int64')
-    for k in ('shift_hours', 'rest_hours'):
-        t_df[T_COLS[k]] = pd.to_numeric(t_df[T_COLS[k]], errors='coerce').astype(float)
-    for k in ('name', 'active_hours', 'required_roles', 'blocked_roles'):
-        t_df[T_COLS[k]] = t_df[T_COLS[k]].fillna('').astype(str)
+    s_df = pd.DataFrame([{S_COLS[k]: r.get(k, '') for k in S_COLS} for r in s_rows])
+    t_df = pd.DataFrame([{T_COLS[k]: r.get(k, '') for k in T_COLS} for r in t_rows])
+    if not t_df.empty:
+        t_df[T_COLS['shared']] = t_df[T_COLS['shared']].map(lambda v: bool(v) and str(v) not in ('0', 'False'))
     return s_df, t_df
 
 
 def to_excel(sheets: dict) -> bytes:
+    """כמה טבלאות לקובץ Excel אחד, מימין לשמאל, עם כותרות מעוצבות"""
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='xlsxwriter') as w:
         for name, df in sheets.items():
@@ -360,7 +224,7 @@ def to_excel(sheets: dict) -> bytes:
             wb, ws = w.book, w.sheets[name]
             ws.right_to_left()
             ws.freeze_panes(1, 1)
-            head = wb.add_format({'bold': True, 'fg_color': OLIVE, 'font_color': 'white',
+            head = wb.add_format({'bold': True, 'fg_color': BRAND, 'font_color': 'white',
                                   'border': 1, 'align': 'right', 'valign': 'vcenter'})
             for ci, col in enumerate(df.columns):
                 ws.write(0, ci, col, head)
@@ -370,7 +234,116 @@ def to_excel(sheets: dict) -> bytes:
 
 
 # ══════════════════════════════════════════════════════════════════
-# כניסה, הרשמה והתחברות שנשמרת
+# תרשימים
+# ══════════════════════════════════════════════════════════════════
+def _plot_layout(fig, height):
+    fig.update_layout(
+        height=height, plot_bgcolor='white', paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Heebo', size=13, color='#2b2b28'),
+        margin=dict(t=40, b=40, l=20, r=20),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1, title_text=''),
+        hoverlabel=dict(font_family='Heebo', align='right'))
+    fig.update_xaxes(gridcolor='#ecece8', linecolor='#d9d9d4', zeroline=False)
+    fig.update_yaxes(gridcolor='#ecece8', linecolor='#d9d9d4', zeroline=False)
+    return fig
+
+
+def timeline_chart(rows, roster, day_start):
+    """ציר זמן: שורה לכל חייל, מקטע לכל משמרת. כוננות מוצגת כפס שקוף ברקע."""
+    base = datetime.datetime(2000, 1, 1) + datetime.timedelta(minutes=day_start)
+    seen, label = {}, {}
+    for sid, name in roster:
+        seen[name] = seen.get(name, 0) + 1
+    for sid, name in roster:
+        label[str(sid)] = f'{name} ({sid})' if seen[name] > 1 else name
+    short_label = '⚠️ חוסר כוח אדם'
+
+    recs = []
+    for r in rows:
+        who = label.get(str(r['personal_id']), r['soldier_name']) if r['personal_id'] else short_label
+        recs.append({
+            'חייל': who,
+            'משימה': r['task_name'] if r['personal_id'] else 'חוסר',
+            'התחלה': base + datetime.timedelta(minutes=r['start_min']),
+            'סיום': base + datetime.timedelta(minutes=r['end_min']),
+            'שעות': f"{sc.fmt_clock(r['start_min'], day_start)}–{sc.fmt_clock(r['end_min'], day_start)}",
+            'פירוט': r['task_name'] + (f" · {r['role']}" if r['role'] else ''),
+        })
+    df = pd.DataFrame(recs)
+    if df.empty:
+        return None
+
+    tasks_order, shared_names = [], set()
+    for r in sorted(rows, key=lambda x: (not x['shared'], x['task_no'])):
+        if r['task_name'] not in tasks_order:
+            tasks_order.append(r['task_name'])
+        if r['shared']:
+            shared_names.add(r['task_name'])
+    by_number = sorted({(r['task_no'], r['task_name']) for r in rows})
+    colors = {name: (TASK_COLORS[i] if i < len(TASK_COLORS) else OTHER_COLOR)
+              for i, (_, name) in enumerate(by_number)}
+    colors['חוסר'] = SHORT_COLOR
+
+    y_order = [label[str(sid)] for sid, _ in roster]
+    if (df['חייל'] == short_label).any():
+        y_order.append(short_label)
+
+    fig = px.timeline(
+        df, x_start='התחלה', x_end='סיום', y='חייל', color='משימה',
+        color_discrete_map=colors,
+        category_orders={'חייל': y_order, 'משימה': tasks_order + ['חוסר']},
+        custom_data=['פירוט', 'שעות'])
+    for tr in fig.data:
+        tr.hovertemplate = '<b>%{y}</b><br>%{customdata[0]}<br>%{customdata[1]}<extra></extra>'
+        tr.marker.line = dict(color='white', width=2)
+        if tr.name in shared_names:
+            tr.opacity, tr.width = 0.28, 0.9
+        else:
+            tr.width = 0.62
+    _plot_layout(fig, max(400, 26 * len(y_order) + 150))
+    fig.update_layout(barmode='overlay', margin=dict(t=95, l=130),
+                      legend=dict(orientation='h', yanchor='bottom', y=1.07, xanchor='left', x=0))
+    fig.update_xaxes(tickformat='%H:%M', dtick=2 * 3600 * 1000, side='top', title_text='',
+                     range=[base, base + datetime.timedelta(hours=24)])
+    fig.update_yaxes(title_text='', categoryorder='array', categoryarray=y_order[::-1],
+                     autorange=True, automargin=True, ticksuffix='  ')
+    return fig
+
+
+def load_chart(summary_df):
+    df = summary_df.sort_values('עומס משוקלל', ascending=False)
+    fig = px.bar(df, x='שם', y='עומס משוקלל', custom_data=['שעות במשימות', 'מתוכן בלילה', 'שעות כוננות'])
+    fig.update_traces(
+        marker_color=BRAND, width=0.55,
+        hovertemplate='<b>%{x}</b><br>עומס משוקלל: %{y}<br>שעות במשימות: %{customdata[0]}'
+                      '<br>מתוכן בלילה: %{customdata[1]}<br>כוננות: %{customdata[2]}<extra></extra>')
+    avg = df['עומס משוקלל'].mean()
+    fig.add_hline(y=avg, line_width=1, line_color='#6b6b66',
+                  annotation_text=f'ממוצע {avg:.1f}', annotation_position='top right',
+                  annotation_font_color='#4a4a45')
+    _plot_layout(fig, 380)
+    fig.update_xaxes(title_text='', tickangle=-40)
+    fig.update_yaxes(title_text='עומס משוקלל (שעות × עצימות)')
+    return fig
+
+
+def usage_chart(daily):
+    df = daily[daily['event'].isin(EVENT_COLORS)]
+    if df.empty:
+        return None
+    fig = px.line(df, x='day', y='n', color='event', markers=True, color_discrete_map=EVENT_COLORS,
+                  category_orders={'event': list(EVENT_COLORS)})
+    fig.update_traces(line_width=2, marker_size=8,
+                      hovertemplate='%{x}<br>%{fullData.name}: %{y}<extra></extra>')
+    _plot_layout(fig, 340)
+    fig.update_xaxes(title_text='', type='category')
+    fig.update_yaxes(title_text='מספר פעולות ביום', rangemode='tozero', tickformat=',d',
+                     dtick=1 if df['n'].max() <= 10 else None)
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════
+# כניסה, הרשמה והתחברות שנשמרת אחרי רענון
 # ══════════════════════════════════════════════════════════════════
 def sign_in(user: dict):
     ss.user = user
@@ -379,6 +352,13 @@ def sign_in(user: dict):
     except Exception:
         ss.cookie_job = None
     st.rerun()
+
+
+def _cookie_token():
+    try:
+        return st.context.cookies.get(COOKIE)
+    except Exception:
+        return None
 
 
 def sign_out():
@@ -390,13 +370,6 @@ def sign_out():
         ss[k] = None
     ss.cookie_job = ('clear', '')
     st.rerun()
-
-
-def _cookie_token():
-    try:
-        return st.context.cookies.get(COOKIE)
-    except Exception:
-        return None
 
 
 def flush_cookie_job():
@@ -428,38 +401,40 @@ if ss.user is None and not ss.get('cookie_checked'):
 
 
 def auth_screen():
-    _, mid, _ = st.columns([1, 1.25, 1])
+    st.markdown("""
+    <div class="app-header">
+      <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה</h1>
+      <p>בונה שבצ"ק יומי מלא בתוך שניות: כל עמדה מאוישת, מנוחה רצופה לחיילים, וחלוקת עומס הוגנת</p>
+    </div>""", unsafe_allow_html=True)
+    _, mid, _ = st.columns([1, 1.4, 1])
     with mid:
-        html('<div class="hello"><h1>שבצ"ק</h1>'
-             '<p>שבצ"ק יומי מוכן בתוך שניות: כל עמדה מאוישת, כל חייל מקבל מנוחה, והעומס מתחלק בהגינות. '
-             'את ההחלטות הקטנות משאירים למפקד.</p></div>')
-        t_in, t_new = st.tabs(['כניסה', 'משתמש חדש'])
+        t_in, t_new = st.tabs(["כניסה", "הרשמה"])
         with t_in:
-            with st.form('login', border=False):
+            with st.form('login'):
                 u = st.text_input('שם משתמש')
                 p = st.text_input('סיסמה', type='password')
                 if st.form_submit_button('כניסה', **FULL):
                     user = db.authenticate(u, p)
                     if user:
                         sign_in(user)
-                    st.error('שם המשתמש או הסיסמה לא נכונים.')
+                    st.error('שם משתמש או סיסמה שגויים.')
         with t_new:
-            with st.form('register', border=False):
-                u = st.text_input('שם משתמש', help='3 תווים לפחות')
-                unit = st.text_input('יחידה או מסגרת', help='לא חובה')
-                p = st.text_input('סיסמה', type='password', help='6 תווים לפחות')
-                p2 = st.text_input('הסיסמה שוב', type='password')
-                if st.form_submit_button('פתיחת משתמש', **FULL):
+            with st.form('register'):
+                u = st.text_input('שם משתמש (3 תווים לפחות)')
+                unit = st.text_input('שם היחידה / המסגרת')
+                p = st.text_input('סיסמה (6 תווים לפחות)', type='password')
+                p2 = st.text_input('אימות סיסמה', type='password')
+                if st.form_submit_button('יצירת חשבון', **FULL):
                     if p != p2:
-                        st.error('שתי הסיסמאות לא זהות.')
+                        st.error('הסיסמאות אינן זהות.')
                     else:
                         user, err = db.create_user(u, p, unit)
                         if err:
                             st.error(err)
                         else:
                             sign_in(user)
-        html('<p class="hint">הנתונים שתזינו נשמרים במשתמש שלכם בלבד. '
-             'עדיף לעבוד עם שמות ומספרים שאינם מזהים חיילים אמיתיים.</p>')
+        box('info', 'הנתונים שתזינו נשמרים בחשבון שלכם בלבד. '
+                    'מומלץ לעבוד עם שמות ומספרים שאינם מזהים חיילים אמיתיים.')
     flush_cookie_job()
 
 
@@ -470,9 +445,7 @@ if ss.user is None:
 USER = ss.user
 
 
-# ══════════════════════════════════════════════════════════════════
-# נתונים שמורים (נשמרים גם בזיכרון של הגלישה, כדי לא לפנות לבסיס הנתונים בכל לחיצה)
-# ══════════════════════════════════════════════════════════════════
+# ── נתונים שמורים: נשמרים גם בזיכרון הגלישה, כדי לא לפנות לבסיס הנתונים בכל לחיצה ──
 def get_roster():
     if ss.get('roster') is None:
         ss.roster = db.load_roster(USER['id'])
@@ -483,7 +456,6 @@ def set_roster(s_rows, t_rows, event: str, details: str = ''):
     db.save_roster(USER['id'], s_rows, t_rows)
     db.log_event(USER['id'], event, details)
     ss.roster = None
-    ss.ed_ver += 1
 
 
 def get_runs():
@@ -498,149 +470,6 @@ def get_run(run_id: int):
         cache[run_id] = db.load_run(run_id, USER['id'])
         ss.run_cache = cache
     return cache[run_id]
-
-
-# ══════════════════════════════════════════════════════════════════
-# תצוגות השבצ"ק
-# ══════════════════════════════════════════════════════════════════
-def _tint(hex_color: str, amount: float = 0.84) -> str:
-    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
-    mix = lambda c: round(c + (255 - c) * amount)
-    return f'#{mix(r):02x}{mix(g):02x}{mix(b):02x}'
-
-
-def task_colors(rows) -> dict:
-    by_number = sorted({(r['task_no'], r['task_name']) for r in rows})
-    return {name: (TASK_COLORS[i] if i < len(TASK_COLORS) else OTHER_COLOR)
-            for i, (_, name) in enumerate(by_number)}
-
-
-def board_html(rows, roster, day_start: int) -> str:
-    """הלוח: שורה לכל חייל, ציר זמן מימין לשמאל, מקטע לכל משמרת."""
-    colors = task_colors(rows)
-    pct = lambda m: f'{m / sc.DAY * 100:.3f}%'
-    clock = lambda m: sc.fmt_clock(m, day_start)
-    night = sc.night_intervals(sc.Config(day_start=day_start))
-    night_html = ''.join(f'<i class="night" style="right:{pct(a)};width:{pct(b - a)}"></i>' for a, b in night)
-
-    mine = {str(sid): [] for sid, _ in roster}
-    missing = {}
-    for r in rows:
-        if r['personal_id']:
-            if str(r['personal_id']) in mine:
-                mine[str(r['personal_id'])].append(r)
-        else:
-            missing.setdefault(r['task_name'], []).append(r)
-
-    ticks = ''.join(f'<span class="tick" style="right:{pct(m)}">{clock(m)}</span>'
-                    for m in range(0, sc.DAY, 120))
-    out = ['<div class="b-row b-head"><div class="b-name">חייל</div>'
-           f'<div class="b-track">{ticks}</div><div class="b-sum">שעות</div></div>']
-
-    def block(r, label):
-        c = colors.get(r['task_name'], OTHER_COLOR)
-        tip = f"{r['task_name']}{' (' + r['role'] + ')' if r['role'] else ''}, {clock(r['start_min'])}-{clock(r['end_min'])}"
-        return (f'<div class="blk" title="{esc(tip)}" style="right:{pct(r["start_min"])};'
-                f'width:calc({pct(r["end_min"] - r["start_min"])} - 2px);background:{_tint(c)};'
-                f'border-color:{c}">{esc(label)}</div>')
-
-    for sid, name in roster:
-        items = mine[str(sid)]
-        excl = [r for r in items if not r['shared']]
-        shared = [r for r in items if r['shared']]
-        tags = ''.join(f'<small>{esc(n)}</small>' for n in dict.fromkeys(r['task_name'] for r in shared))
-        track = night_html + ''.join(block(r, r['task_name']) for r in excl)
-        track += ''.join(
-            f'<i class="stand" title="{esc(r["task_name"])}, {clock(r["start_min"])}-{clock(r["end_min"])}" '
-            f'style="right:{pct(r["start_min"])};width:{pct(r["end_min"] - r["start_min"])};'
-            f'background:{colors.get(r["task_name"], OTHER_COLOR)}"></i>' for r in shared)
-        hours = sum(r['end_min'] - r['start_min'] for r in excl) / 60
-        out.append(f'<div class="b-row"><div class="b-name"><span class="nm">{esc(name)}</span>{tags}</div>'
-                   f'<div class="b-track">{track}</div><div class="b-sum">{hours:g}</div></div>')
-
-    for task_name, items in missing.items():
-        merged = {}
-        for r in items:
-            merged.setdefault((r['start_min'], r['end_min']), []).append(r)
-        track = night_html
-        for (a, b), group in sorted(merged.items()):
-            label = 'לא אויש' + (f' ×{len(group)}' if len(group) > 1 else '')
-            track += (f'<div class="blk" title="{esc(task_name)}, {clock(a)}-{clock(b)}" '
-                      f'style="right:{pct(a)};width:calc({pct(b - a)} - 2px)">{label}</div>')
-        out.append(f'<div class="b-row short"><div class="b-name">חסר: {esc(task_name)}</div>'
-                   f'<div class="b-track">{track}</div><div class="b-sum"></div></div>')
-
-    legend = ''.join(f'<span><i style="background:{c}"></i>{esc(n)}</span>' for n, c in colors.items())
-    legend += '<span><i style="background:#DDE2EA"></i>לילה</span>'
-    return (f'<div class="legend">{legend}</div>'
-            f'<div class="board-wrap"><div class="board">{"".join(out)}</div></div>')
-
-
-def by_task_html(rows, day_start: int) -> str:
-    """לכל משימה: מי נמצא בה בכל משמרת"""
-    clock = lambda m: sc.fmt_clock(m, day_start)
-    tasks = {}
-    for r in sorted(rows, key=lambda x: (x['task_no'], x['start_min'])):
-        tasks.setdefault(r['task_name'], {}).setdefault((r['start_min'], r['end_min']), []).append(r)
-    body = ''
-    for name, shifts in tasks.items():
-        first = True
-        for (a, b), group in shifts.items():
-            people = []
-            for r in group:
-                if r['personal_id']:
-                    people.append(esc(r['soldier_name']) + (f' ({esc(r["role"])})' if r['role'] else ''))
-                else:
-                    people.append('<span class="miss">לא אויש' + (f' ({esc(r["role"])})' if r['role'] else '') + '</span>')
-            lead = f'<td class="k" rowspan="{len(shifts)}">{esc(name)}</td>' if first else ''
-            body += f'<tr>{lead}<td class="time">{span(a, b, day_start)}</td><td>{", ".join(people)}</td></tr>'
-            first = False
-    return ('<div class="t-wrap narrow"><table class="t"><thead><tr><th>משימה</th><th>שעות</th><th>משובצים</th></tr></thead>'
-            f'<tbody>{body}</tbody></table></div>')
-
-
-def rest_issues_html(violations: pd.DataFrame) -> str:
-    """שורה לכל חייל: איפה קוצרה לו מנוחה בין משמרות, ומה רצף המנוחה הארוך ביותר שלו"""
-    people = {}
-    for _, r in violations.iterrows():
-        entry = people.setdefault(r['חייל'], {'between': [], 'block': ''})
-        text = esc(r['פירוט']).replace(': 0:00 שעות מנוחה במקום ', ': בלי מנוחה, במקום ')
-        if r['סוג'].startswith('אין מנוחה רצופה'):
-            text = text.replace('הרצף הארוך ביותר: ', '')
-            entry['block'] = 'אין מנוחה בכלל' if text.startswith('0:00') else text
-        else:
-            entry['between'].append(text)
-    body = ''
-    for name, e in people.items():
-        between = '<br>'.join(e['between']) if e['between'] else 'מלאה'
-        body += (f'<tr><td class="k">{esc(name)}</td><td>{between}</td>'
-                 f'<td>{e["block"] or "מלא"}</td></tr>')
-    return ('<div class="t-wrap"><table class="t"><thead><tr><th>חייל</th><th>מנוחה בין משמרות</th>'
-            f'<th>רצף המנוחה הארוך ביותר</th></tr></thead><tbody>{body}</tbody></table></div>')
-
-
-def load_html(summary: pd.DataFrame) -> str:
-    df = summary.sort_values('עומס משוקלל', ascending=False)
-    top = max(float(df['עומס משוקלל'].max()), 1.0)
-    avg = float(df['עומס משוקלל'].mean())
-    cells = ''
-    for _, r in df.iterrows():
-        w = float(r['עומס משוקלל']) / top * 100
-        extra = f", מהן {r['מתוכן בלילה']:g} בלילה" if r['מתוכן בלילה'] else ''
-        cells += (f'<div>{esc(r["שם"])}</div>'
-                  f'<div class="bar-bg" title="{r["שעות במשימות"]:g} שעות{extra}">'
-                  f'<div class="bar-fg" style="width:{w:.1f}%"></div>'
-                  f'<div class="avg" style="right:{avg / top * 100:.1f}%"></div></div>'
-                  f'<div class="v"><b>{r["שעות במשימות"]:g} שעות</b>, עומס {r["עומס משוקלל"]:g}</div>')
-    return f'<div class="load">{cells}</div>'
-
-
-def schedule_excel(rows, roster, day_start, extra: dict = None) -> bytes:
-    sheets = {'לפי משימה': sc.task_table(rows, day_start), 'לפי חייל': sc.soldier_grid(rows, roster, day_start)}
-    for name, df in (extra or {}).items():
-        if df is not None and not df.empty:
-            sheets[name] = df
-    return to_excel(sheets)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -660,11 +489,13 @@ def run_schedule(s_rows, t_rows, d_rows, cfg: sc.Config):
                  f"{len(soldiers)} חיילים, {len(tasks)} משימות, כיסוי {m['coverage_pct']:.0f}%")
     ss.runs = None
     return {
-        'run_id': run_id, 'rows': rows, 'roster': roster, 'day_start': cfg.day_start,
-        'sleep_target': cfg.sleep_target, 'engine': res['engine'], 'seconds': res['seconds'],
+        'run_id': run_id, 'label': label, 'rows': rows, 'roster': roster,
+        'day_start': cfg.day_start, 'sleep_target': cfg.sleep_target,
+        'num_tasks': len(tasks), 'engine': res['engine'], 'seconds': res['seconds'],
         'warnings': warns + res['warnings'],
         'stages': [{k: v for k, v in s.items() if not k.startswith('_')} for s in res['stages']],
-        'compare': compare, 'summary': sc.summary_table(m),
+        'compare': compare,
+        'summary': sc.summary_table(m),
         'violations': sc.violations_table(m, cfg),
         'shortages': pd.DataFrame(res['shortage_reasons']),
         'hard': m['hard_violations'],
@@ -674,376 +505,366 @@ def run_schedule(s_rows, t_rows, d_rows, cfg: sc.Config):
     }
 
 
+def render_schedule(rows, roster, day_start, key: str, summary=None, violations=None,
+                    shortages=None, compare=None):
+    """הצגת שבצ"ק: ציר זמן, טבלאות, והורדה. משמש גם את מסך התוצאה וגם את ההיסטוריה."""
+    task_df = sc.task_table(rows, day_start)
+    grid_df = sc.soldier_grid(rows, roster, day_start)
+
+    fig = timeline_chart(rows, roster, day_start)
+    if fig is not None:
+        st.plotly_chart(fig, key=f'tl_{key}', **FULL)
+        st.caption('כל שורה היא חייל וכל מקטע הוא משמרת. פס שקוף ברקע הוא כוננות (משימה שיתופית). '
+                   'העמידו את העכבר על מקטע כדי לראות פרטים.')
+
+    v_grid, v_task = st.tabs(['טבלה לפי חייל', 'טבלה לפי משימה'])
+    with v_grid:
+        st.dataframe(grid_df, hide_index=True, **FULL)
+    with v_task:
+        st.dataframe(task_df, hide_index=True, **FULL)
+
+    sheets = {'לפי משימה': task_df, 'לפי חייל': grid_df}
+    if summary is not None and not summary.empty:
+        sheets['סיכום לחייל'] = summary
+    if violations is not None and not violations.empty:
+        sheets['חריגות לאישור'] = violations
+    if shortages is not None and not shortages.empty:
+        sheets['חוסרים'] = shortages
+    if compare is not None and not compare.empty:
+        sheets['השוואה'] = compare
+    if st.download_button('📥 הורדת השבצ"ק (Excel)', data=to_excel(sheets),
+                          file_name=f'shavtzak_{key}.xlsx', key=f'dl_{key}', **FULL):
+        db.log_event(USER['id'], 'download', key)
+
+
 def render_result(v):
-    m, n = v['m'], len(v['roster'])
+    m = v['m']
     if v['hard']:
-        note('נמצאה סתירה לאילוץ קשיח. אל תשתמשו בשבצ"ק הזה ודווחו לנו:<br>' + '<br>'.join(map(esc, v['hard'])), 'bad')
+        box('error', '🚨 נמצאה הפרה של אילוץ קשיח — אל תשתמשו בשבצ"ק הזה:<br>' + '<br>'.join(v['hard']))
     for w in v['warnings']:
-        note(esc(w), 'warn')
+        box('warn', '⚠️ ' + w)
 
-    short = m['short_minutes'] > 0
-    if short:
-        left = 'תקן אחד נשאר ריק' if m['short_slots'] == 1 else f'{m["short_slots"]} תקנים נשארו ריקים'
-        html(f'<div class="verdict bad">השבצ"ק מוכן, אבל {left}</div>')
-    elif v['n_rest_viol']:
-        html(f'<div class="verdict">השבצ"ק מוכן: כל העמדות מאוישות, ב-{v["n_rest_viol"]} מקרים קוצרה מנוחה</div>')
+    if m['short_minutes'] == 0:
+        box('info', f"✅ <b>כיסוי מלא</b> — כל {m['slots_total']} התקנים מאוישים.")
     else:
-        html('<div class="verdict">השבצ"ק מוכן: כל העמדות מאוישות</div>')
+        box('warn', f"⚠️ <b>{m['short_slots']} תקנים לא אוישו ({m['short_minutes'] / 60:.1f} שעות-עמדה).</b> "
+                    f"אין דרך לאייש אותם בלי להפר אילוץ קשיח (הסמכה, פטור, חסימה אישית או "
+                    f"שתי משימות בלעדיות באותו זמן). הפירוט והסיבה לכל חוסר מופיעים למטה.")
 
-    rest_bad = v['n_rest_viol'] > 0
-    html('<div class="facts">'
-         f'<div class="fact {"bad" if short else ""}"><b>{m["slots_total"] - m["short_slots"]} מתוך {m["slots_total"]}</b>'
-         '<span>תקנים מאוישים</span></div>'
-         f'<div class="fact"><b>{m["full_rest"]} מתוך {n}</b>'
-         f'<span>חיילים עם {sc.fmt_dur(v["sleep_target"]).split(":")[0]} שעות מנוחה רצופות, {m["full_night_rest"]} מהם בלילה</span></div>'
-         f'<div class="fact {"bad" if rest_bad else ""}"><b>{v["n_rest_viol"]}</b>'
-         '<span>מקרים של מנוחה קצרה מהנדרש בין משמרות</span></div>'
-         f'<div class="fact"><b>{m["hours_gap"]:g} שעות</b>'
-         '<span>ההפרש בין החייל העמוס ביותר לפנוי ביותר</span></div>'
-         '</div>')
+    n = len(v['roster'])
+    st.markdown(f"""
+    <div class="metric-row">
+      <div class="metric-card"><div class="mc-label">כיסוי עמדות</div>
+        <div class="mc-value">{m['coverage_pct']:.0f}%</div>
+        <div class="mc-sub">{n} חיילים · {v['num_tasks']} משימות</div></div>
+      <div class="metric-card"><div class="mc-label">מנוחה רצופה מלאה</div>
+        <div class="mc-value">{m['full_rest']}/{n}</div>
+        <div class="mc-sub">{m['full_night_rest']} מהם בלילה · יעד {sc.fmt_dur(v['sleep_target'])} שעות</div></div>
+      <div class="metric-card"><div class="mc-label">מנוחה קצרה מהנדרש</div>
+        <div class="mc-value">{v['n_rest_viol']}</div>
+        <div class="mc-sub">מקרים בין משמרות</div></div>
+      <div class="metric-card"><div class="mc-label">פער עומס</div>
+        <div class="mc-value">{m['load_gap']:.0f}</div>
+        <div class="mc-sub">בין העמוס ביותר לפנוי ביותר · {m['hours_gap']:.0f} שעות</div></div>
+      <div class="metric-card"><div class="mc-label">זמן חישוב</div>
+        <div class="mc-value">{v['seconds']:.0f}״</div>
+        <div class="mc-sub">מנוע: {v['engine']}</div></div>
+    </div>""", unsafe_allow_html=True)
 
-    n_issues = v['violations']['חייל'].nunique() + len(v['shortages'])
-    t_board, t_task, t_issues, t_load, t_compare = st.tabs(
-        ['לוח', 'לפי משימה', f'לאישור המפקד ({n_issues})' if n_issues else 'לאישור המפקד', 'עומס', 'לפני ואחרי'])
-    with t_board:
-        html(board_html(v['rows'], v['roster'], v['day_start']))
-        html('<p class="hint">כל שורה היא חייל, והזמן מתקדם מימין לשמאל. '
-             'העמידו את העכבר על מקטע כדי לראות שעות מדויקות. פס דק בתחתית השורה מסמן כוננות.</p>')
-    with t_task:
-        html(by_task_html(v['rows'], v['day_start']))
-    with t_issues:
-        if not n_issues:
-            note('אין מה לאשר: כל העמדות מאוישות, וכל חייל מקבל את המנוחה שהוגדרה.')
-        if not v['shortages'].empty:
-            st.markdown('### תקנים שלא אוישו')
-            html('<p class="hint">אי אפשר לאייש אותם בלי לשבור אילוץ קשיח. הסיבה מופיעה ליד כל אחד.</p>')
-            html(html_table(v['shortages']))
-        if not v['violations'].empty:
-            st.markdown('### מנוחה שקוצרה')
-            html('<p class="hint">המקומות שבהם המערכת ויתרה על מנוחה כדי שלא תישאר עמדה ריקה.</p>')
-            html(rest_issues_html(v['violations']))
-    with t_load:
-        html('<p class="hint">העומס משקלל שעות לפי עצימות המשימה, ושעת לילה נספרת כשעה וחצי. '
-             'הקו הכהה מסמן את הממוצע.</p>')
-        html(load_html(v['summary']))
-        with st.expander('הטבלה המלאה'):
-            html(html_table(v['summary']))
-    with t_compare:
-        html('<p class="hint">"שיבוץ בסיסי" מחקה את הדרך הידנית: עוברים על המשמרות לפי הסדר ומשבצים בכל פעם '
-             'את מי שפנוי ועבד הכי פחות. "שיבוץ ממוטב" הוא מה שהמערכת הפיקה.</p>')
-        html(html_table(v['compare'], bold_col='שיבוץ ממוטב'))
-        with st.expander('שלבי החישוב'):
-            html(f'<p class="hint">החישוב נמשך {v["seconds"]:g} שניות, במנוע {esc(v["engine"])}. '
-                 'כל שלב ננעל לפני הבא, כך ששלב מאוחר לא פוגע בשלב שקדם לו.</p>')
-            if v['stages']:
-                html(html_table(pd.DataFrame(v['stages'])))
+    if not v['shortages'].empty:
+        st.subheader('❌ תקנים שלא אוישו, והסיבה')
+        small_table(v['shortages'])
 
-    data = schedule_excel(v['rows'], v['roster'], v['day_start'],
-                          {'סיכום לחייל': v['summary'], 'לאישור המפקד': v['violations'],
-                           'חוסרים': v['shortages'], 'השוואה': v['compare']})
-    if st.download_button('הורדה ל-Excel', data=data, file_name=f'shavtzak_{v["run_id"]}.xlsx',
-                          key=f'dl_run{v["run_id"]}'):
-        db.log_event(USER['id'], 'download', f'run {v["run_id"]}')
+    st.subheader('📅 השבצ"ק')
+    render_schedule(v['rows'], v['roster'], v['day_start'], key=f"run{v['run_id']}",
+                    summary=v['summary'], violations=v['violations'],
+                    shortages=v['shortages'], compare=v['compare'])
+
+    st.subheader('🔎 חריגות לאישור המפקד')
+    if v['violations'].empty:
+        box('info', 'אין חריגות: כל חייל מקבל את המנוחה הנדרשת אחרי כל משמרת ומנוחה רצופה מלאה.')
+    else:
+        st.caption('המקומות שבהם המערכת ויתרה על מנוחה כדי שכל עמדה תאויש. '
+                   'כיסוי העמדות תמיד קודם; אלה הפשרות שנדרשו בשבילו.')
+        small_table(v['violations'])
+
+    st.subheader('⚖️ חלוקת העומס')
+    st.plotly_chart(load_chart(v['summary']), key=f"load{v['run_id']}", **FULL)
+    with st.expander('טבלת סיכום לכל חייל'):
+        st.dataframe(v['summary'], hide_index=True, **FULL)
+
+    st.subheader('📊 לפני ואחרי: שיבוץ בסיסי מול שיבוץ ממוטב')
+    st.caption('"שיבוץ בסיסי" מחקה את הדרך הידנית: עוברים על המשמרות לפי סדר הזמן ומשבצים בכל פעם '
+               'את החייל הפנוי שעבד הכי פחות. "שיבוץ ממוטב" הוא תוצאת האלגוריתם.')
+    small_table(v['compare'])
+
+    with st.expander('איך האלגוריתם הגיע לתוצאה'):
+        st.markdown('האופטימיזציה נעשית בשלושה שלבים, לפי סדר עדיפות קשיח. '
+                    'כל שלב ננעל לפני שעוברים לשלב הבא, כך ששלב מאוחר לא יכול לפגוע בשלב שקדם לו.')
+        if v['stages']:
+            small_table(pd.DataFrame(v['stages']))
+
+
+def collect_inputs(sf, tf, df_, saved_s, saved_t):
+    """מחזיר (חיילים, משימות, הנחיות), או None אם חסר משהו (ההודעה כבר הוצגה)."""
+    if sf is not None and tf is not None:
+        up_s, up_t = sc.rows_from_excel(pd.read_excel(sf), pd.read_excel(tf))
+        set_roster(up_s, up_t, 'upload', f'{len(up_s)} חיילים, {len(up_t)} משימות')
+        s_rows, t_rows = get_roster()
+    elif sf is not None or tf is not None:
+        st.error('כדי להחליף את הנתונים השמורים צריך להעלות גם קובץ חיילים וגם קובץ משימות.')
+        return None
+    else:
+        s_rows, t_rows = saved_s, saved_t
+    if not s_rows or not t_rows:
+        st.error('אין נתונים להרצה. העלו קבצים או טענו נתוני דוגמה.')
+        return None
+    d_rows = sc.directives_from_excel(pd.read_excel(df_)) if df_ is not None else []
+    return s_rows, t_rows, d_rows
 
 
 # ══════════════════════════════════════════════════════════════════
 # מסך ראשי
 # ══════════════════════════════════════════════════════════════════
-bar_l, bar_r = st.columns([7, 1])
-with bar_l:
-    who = esc(USER['username']) + (f', {esc(USER["unit_name"])}' if USER['unit_name'] else '')
-    html(f'<div class="bar"><span class="mark">שבצ"ק</span><span class="who">{who}</span></div>')
-with bar_r:
+head_l, head_r = st.columns([5, 1])
+with head_l:
+    st.markdown(f"""
+    <div class="app-header">
+      <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה</h1>
+      <p>שלום {USER['username']}{' · ' + USER['unit_name'] if USER['unit_name'] else ''}</p>
+    </div>""", unsafe_allow_html=True)
+with head_r:
+    st.write('')
     if st.button('יציאה', **FULL):
         sign_out()
 
-tab_names = ['שבצ"ק', 'נתונים', 'היסטוריה', 'מדריך'] + (['ניהול'] if USER['is_admin'] else [])
+tab_names = ["🚀  שיבוץ", "📂  היסטוריה", "📖  מדריך", "📥  תבניות"]
+if USER['is_admin']:
+    tab_names.append("🔐  ניהול")
 tabs = st.tabs(tab_names)
-tab_run, tab_data, tab_history, tab_guide = tabs[:4]
-s_rows, t_rows = get_roster()
+tab_run, tab_history, tab_guide, tab_templates = tabs[:4]
 
-# ── שבצ"ק ────────────────────────────────────────────────────────
+# ── שיבוץ ───────────────────────────────────────────────────────
 with tab_run:
-    if not s_rows or not t_rows:
-        html('<p class="lead">כדי ליצור שבצ"ק צריך רשימת חיילים ורשימת משימות.</p>'
-             '<p class="hint">אפשר להזין אותן בלשונית "נתונים", או לטעון נתוני דוגמה ולראות איך זה עובד.</p>')
-        if st.button('טעינת נתוני דוגמה', type='primary'):
-            d_s, d_t = demo_rows()
-            set_roster(d_s, d_t, 'demo')
-            st.rerun()
-    else:
-        html(f'<p class="lead">{len(s_rows)} חיילים ו-{len(t_rows)} משימות מוכנים לשיבוץ.</p>')
-        with st.expander('הגדרות'):
-            g1, g2, g3 = st.columns(3)
-            with g1:
-                day_start_h = st.selectbox(
-                    'היממה מתחילה בשעה', list(range(24)), index=6, format_func=lambda h: f'{h:02d}:00',
-                    help='השבצ"ק מכסה 24 שעות מהשעה הזו. 06:00 או 08:00 שומרות על הלילה כרצף אחד.')
-            with g2:
-                sleep_h = st.selectbox('מנוחה רצופה לחייל', [5, 6, 7, 8], index=2,
-                                       format_func=lambda h: f'{h} שעות')
-            with g3:
-                time_limit = st.selectbox('משך החישוב', [10, 20, 60], index=1,
-                                          format_func=lambda s: {10: 'מהיר, עד 10 שניות', 20: 'רגיל, עד 20 שניות',
-                                                                 60: 'יסודי, עד דקה'}[s])
-        with st.expander('הנחיות מפקד'):
-            html('<p class="hint">לא חובה. קבעו מראש מי חייב לקבל משמרת במשימה מסוימת ומי לא ישובץ אליה. '
-                 'השעות מצמצמות את ההנחיה לחלון זמן, למשל 22-2.</p>')
-            soldier_opts = [f"{r['full_name']} ({r['personal_id']})" for r in s_rows]
-            task_opts = [f"{r['name']} ({r['task_no']})" for r in t_rows]
-            d_df = st.data_editor(
-                pd.DataFrame(columns=D_COLS).astype(str), num_rows='dynamic', hide_index=True,
-                key=f'directives_{ss.ed_ver}', **FULL,
-                column_config={
-                    D_COLS[0]: st.column_config.SelectboxColumn(options=soldier_opts, required=True),
-                    D_COLS[1]: st.column_config.SelectboxColumn(options=task_opts, required=True),
-                    D_COLS[2]: st.column_config.SelectboxColumn(options=['חובה', 'אסור'], required=True),
-                    D_COLS[3]: st.column_config.TextColumn(),
-                })
+    saved_s, saved_t = get_roster()
 
-        if st.button('יצירת שבצ"ק', type='primary'):
-            try:
-                d_rows = []
-                for _, r in d_df.iterrows():
-                    if not all(_filled(r[c]) for c in D_COLS[:3]):
-                        continue
-                    d_rows.append({'personal_id': str(r[D_COLS[0]]).rsplit('(', 1)[-1].rstrip(')'),
-                                   'task_no': str(r[D_COLS[1]]).rsplit('(', 1)[-1].rstrip(')'),
-                                   'kind': r[D_COLS[2]],
-                                   'hours': r[D_COLS[3]] if _filled(r[D_COLS[3]]) else ''})
+    st.markdown('#### 1. נתונים')
+    if saved_s and saved_t:
+        box('info', f'בחשבון שלכם שמורים <b>{len(saved_s)} חיילים</b> ו-<b>{len(saved_t)} משימות</b>. '
+                    f'אפשר להריץ שיבוץ מיד, או להעלות קבצים חדשים שיחליפו אותם.')
+    else:
+        box('info', 'כדי להתחיל, העלו קובץ חיילים וקובץ משימות (יש תבניות להורדה בלשונית "תבניות"), '
+                    'או טענו נתוני דוגמה כדי לראות איך המערכת עובדת.')
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        sf = st.file_uploader('קובץ חיילים (xlsx)', type='xlsx', key='sf')
+    with c2:
+        tf = st.file_uploader('קובץ משימות (xlsx)', type='xlsx', key='tf')
+    with c3:
+        df_ = st.file_uploader('הנחיות מפקד (xlsx, לא חובה)', type='xlsx', key='df')
+
+    if st.button('טעינת נתוני דוגמה (24 חיילים, 6 משימות)'):
+        set_roster(*demo_rows(), 'demo')
+        st.rerun()
+
+    st.markdown('#### 2. הגדרות')
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        day_start_h = st.selectbox(
+            'שעת תחילת היממה', list(range(24)), index=6, format_func=lambda h: f'{h:02d}:00',
+            help='השבצ"ק מכסה 24 שעות מהשעה הזו. מומלץ 06:00 או 08:00, כדי שהלילה יישאר רצף אחד '
+                 'ומשימות לילה לא ייחתכו באמצע.')
+    with g2:
+        sleep_h = st.selectbox('יעד מנוחה רצופה לחייל (שעות)', [5, 6, 7, 8], index=2)
+    with g3:
+        time_limit = st.slider('זמן חישוב מרבי (שניות)', 5, 120, 20, 5,
+                               help='החישוב נעצר מוקדם יותר כשאין עוד שיפור. במחלקה רגילה 20 שניות מספיקות.')
+
+    st.markdown('#### 3. הרצה')
+    if st.button('⚙️ יצירת שבצ"ק', type='primary', **FULL):
+        done = False
+        try:
+            inputs = collect_inputs(sf, tf, df_, saved_s, saved_t)
+            if inputs is not None:
                 cfg = sc.Config(day_start=day_start_h * 60, sleep_target=sleep_h * 60,
                                 sleep_min=min(4, sleep_h - 1) * 60, time_limit=float(time_limit))
-                with st.spinner('משבץ: קודם מאייש עמדות, אחר כך מסדר מנוחה, ובסוף מאזן עומס'):
-                    ss.view = run_schedule(s_rows, t_rows, d_rows, cfg)
-                st.rerun()
-            except Exception:
-                ss.view = None
-                note('משהו השתבש בזמן החישוב. הפרטים למטה יעזרו לאתר את התקלה.', 'bad')
-                st.code(traceback.format_exc())
+                with st.spinner('מחשב שיבוץ: כיסוי עמדות ← מנוחה ושינה ← הוגנות...'):
+                    ss.view = run_schedule(*inputs, cfg)
+                done = True
+        except ValueError as e:
+            ss.view = None
+            box('error', f'❌ {e}')
+        except Exception:
+            ss.view = None
+            box('error', '🚨 שגיאה טכנית:')
+            st.code(traceback.format_exc())
+        if done:
+            st.rerun()      # ציור נקי של התוצאה, כדי שהלשוניות לא יתאפסו בלחיצה הבאה
 
-        if ss.view:
-            render_result(ss.view)
-
-# ── נתונים ──────────────────────────────────────────────────────
-with tab_data:
-    s_df, t_df = rows_to_frames(s_rows, t_rows)
-    d_soldiers, d_tasks, d_files = st.tabs([f'חיילים ({len(s_rows)})', f'משימות ({len(t_rows)})', 'קבצים'])
-    with d_soldiers:
-        html('<p class="hint">לחיצה על תא עורכת אותו, והשורה הריקה בתחתית מוסיפה חייל. '
-             'פורמט השעות מוסבר בלשונית "מדריך".</p>')
-        s_edit = st.data_editor(
-            s_df, num_rows='dynamic', hide_index=True, key=f'ed_s_{ss.ed_ver}', **FULL,
-            column_config={
-                S_COLS['personal_id']: _col(st.column_config.TextColumn, width='small', pinned=True),
-                S_COLS['full_name']: _col(st.column_config.TextColumn, pinned=True),
-                S_COLS['exemptions']: _col(st.column_config.TextColumn, help='מס"ד של משימות שהחייל פטור מהן, למשל 104, 105'),
-                S_COLS['roles']: _col(st.column_config.TextColumn, help='למשל: נהג, חובש'),
-                S_COLS['blocked_hours']: _col(st.column_config.TextColumn, help='מתי החייל לא זמין, למשל 08:30-12:00'),
-            })
-    with d_tasks:
-        html('<p class="hint">סימון בעמודה "כוננות" מתיר לשבץ את המשימה במקביל לכל משימה אחרת. '
-             'העמידו את העכבר על כותרת של עמודה כדי לראות מה כותבים בה.</p>')
-        num = st.column_config.NumberColumn
-        t_edit = st.data_editor(
-            t_df, num_rows='dynamic', hide_index=True, key=f'ed_t_{ss.ed_ver}', **FULL,
-            column_config={
-                T_COLS['task_no']: _col(num, 'מס"ד', width='small', step=1, format='%d', pinned=True),
-                T_COLS['name']: _col(st.column_config.TextColumn, 'משימה', pinned=True),
-                T_COLS['required']: _col(num, 'סד"כ', width='small', min_value=1, step=1, format='%d',
-                                         help='כמה חיילים בכל משמרת'),
-                T_COLS['shift_hours']: _col(num, 'משך', width='small', min_value=0.25, step=0.5, help='משך משמרת, בשעות'),
-                T_COLS['rest_hours']: _col(num, 'מנוחה', width='small', min_value=0.0, step=0.5,
-                                           help='כמה שעות מנוחה מגיעות אחרי משמרת במשימה הזו'),
-                T_COLS['shared']: _col(st.column_config.CheckboxColumn, 'כוננות', width='small', default=False,
-                                       help='משימה שמותרת במקביל לכל משימה אחרת'),
-                T_COLS['active_hours']: _col(st.column_config.TextColumn, 'שעות פעילות',
-                                             help='all לכל היממה, או טווח כמו 22-6'),
-                T_COLS['required_roles']: _col(st.column_config.TextColumn, 'הסמכה נדרשת',
-                                               help='הסמכה לכל תקן, למשל: מפקד, נהג. שאר התקנים פתוחים לכולם'),
-                T_COLS['intensity']: _col(num, 'עצימות', width='small', min_value=1, max_value=10, step=1, format='%d',
-                                          help='מ-1 עד 10. משפיע על חישוב ההוגנות'),
-                T_COLS['blocked_roles']: _col(st.column_config.TextColumn, 'תפקידים חסומים',
-                                              help='מי לא משובץ למשימה הזו'),
-                T_COLS['priority']: _col(num, 'קריטיות', width='small', min_value=1, max_value=10, step=1, format='%d',
-                                         help='מ-1 עד 10. כשחסרים חיילים, משימה קריטית מאוישת קודם'),
-            })
-    with d_files:
-        html('<p class="hint">העלאה מחליפה את כל הנתונים השמורים. הקבצים צריכים להיות במבנה של התבניות.</p>')
-        f1, f2 = st.columns(2)
-        with f1:
-            sf = st.file_uploader('קובץ חיילים', type='xlsx', key=f'sf_{ss.ed_ver}')
-        with f2:
-            tf = st.file_uploader('קובץ משימות', type='xlsx', key=f'tf_{ss.ed_ver}')
-        if sf is not None and tf is not None:
-            if st.button('החלפת הנתונים בקבצים שהועלו', type='primary'):
-                try:
-                    up_s, up_t = sc.rows_from_excel(pd.read_excel(sf), pd.read_excel(tf))
-                    set_roster(up_s, up_t, 'upload', f'{len(up_s)} חיילים, {len(up_t)} משימות (Excel)')
-                    st.rerun()
-                except ValueError as e:
-                    st.error(str(e))
-        st.markdown('### הורדות')
-        b1, b2, b3 = st.columns(3)
-        ex_s, ex_t = rows_to_frames(*demo_rows())
-        with b1:
-            st.download_button('הנתונים שלי', data=to_excel({'חיילים': s_df, 'משימות': t_df}),
-                               file_name='shavtzak_data.xlsx', disabled=not (s_rows or t_rows), key='dl_mine', **FULL)
-        with b2:
-            st.download_button('תבנית חיילים', data=to_excel({'Soldiers': ex_s.head(6)}),
-                               file_name='Soldiers_template.xlsx', key='tpl_s', **FULL)
-        with b3:
-            st.download_button('תבנית משימות', data=to_excel({'Tasks': ex_t}),
-                               file_name='Tasks_template.xlsx', key='tpl_t', **FULL)
-        st.markdown('### נתוני דוגמה')
-        html('<p class="hint">24 חיילים ו-6 משימות, כדי לנסות את המערכת. הטעינה מחליפה את הנתונים השמורים.</p>')
-        if st.button('טעינת נתוני דוגמה', key='demo_data'):
-            set_roster(*demo_rows(), 'demo')
-            st.rerun()
-
-    changed = not (s_edit.astype(str).fillna('').equals(s_df.astype(str).fillna(''))
-                   and t_edit.astype(str).equals(t_df.astype(str)))
-    if changed:
-        note('יש שינויים שעוד לא נשמרו.', 'warn')
-        if st.button('שמירת השינויים', type='primary'):
-            try:
-                new_s, new_t = sc.rows_from_excel(_clean(s_edit), _clean(t_edit))
-                _, _, _, warns = sc.build_objects(new_s, new_t)
-                set_roster(new_s, new_t, 'upload', f'{len(new_s)} חיילים, {len(new_t)} משימות')
-                ss.save_warnings = warns
-                st.rerun()
-            except ValueError as e:
-                st.error(str(e))
-    for w in ss.pop('save_warnings', None) or []:
-        note(esc(w), 'warn')
+    if ss.view:
+        st.markdown('---')
+        render_result(ss.view)
 
 # ── היסטוריה ────────────────────────────────────────────────────
 with tab_history:
-    runs = get_runs()
-    if runs.empty:
-        html('<p class="lead">עוד אין שיבוצים שמורים.</p>'
-             '<p class="hint">כל שבצ"ק שתיצרו נשמר כאן לבד, ואפשר לחזור אליו ולהוריד אותו שוב.</p>')
+    st.markdown('### 📂 השיבוצים שלכם')
+    hist = get_runs()
+    if hist.empty:
+        box('warn', 'עדיין אין שיבוצים שמורים. כל שיבוץ שתיצרו נשמר כאן אוטומטית.')
     else:
-        options = {int(r['id']): f"{r['label']}, {r['num_soldiers']} חיילים, כיסוי {r['coverage_pct']:.0f}%"
-                   for _, r in runs.iterrows()}
-        chosen = st.selectbox('שיבוץ', list(options), format_func=lambda i: options[i])
-        run, rows = get_run(chosen)
+        st.dataframe(hist.rename(columns={
+            'id': 'מספר', 'created_at': 'נוצר', 'label': 'שם', 'num_soldiers': 'חיילים',
+            'num_tasks': 'משימות', 'short_hours': 'שעות לא מאוישות', 'coverage_pct': 'כיסוי %',
+            'rest_violations': 'חריגות מנוחה', 'full_rest': 'מנוחה מלאה',
+            'load_gap': 'פער עומס', 'solve_seconds': 'זמן חישוב (שנ׳)'}), hide_index=True, **FULL)
+        options = {f"#{r['id']} · {r['label']}": int(r['id']) for _, r in hist.iterrows()}
+        chosen = st.selectbox('הצגת שיבוץ', list(options))
+        run, rows = get_run(options[chosen])
         if run:
-            h_board, h_task = st.tabs(['לוח', 'לפי משימה'])
-            with h_board:
-                html(board_html(rows, run['roster'], run['day_start']))
-            with h_task:
-                html(by_task_html(rows, run['day_start']))
-            if st.download_button('הורדה ל-Excel',
-                                  data=schedule_excel(rows, run['roster'], run['day_start'],
-                                                      {'השוואה': pd.DataFrame(run['compare'])}),
-                                  file_name=f'shavtzak_{run["id"]}.xlsx', key=f'dl_hist{run["id"]}'):
-                db.log_event(USER['id'], 'download', f'run {run["id"]}')
-        with st.expander('מחיקת ההיסטוריה'):
-            html('<p class="hint">המחיקה מסירה את כל השיבוצים השמורים שלכם, ואי אפשר לשחזר אותם.</p>')
-            if st.button('מחיקת כל השיבוצים שלי'):
-                db.delete_runs(USER['id'])
-                ss.runs, ss.run_cache, ss.view = None, None, None
-                st.rerun()
+            render_schedule(rows, run['roster'], run['day_start'], key=f"hist{run['id']}",
+                            compare=pd.DataFrame(run['compare']))
+        st.markdown('---')
+        if st.button('🗑️ מחיקת כל ההיסטוריה שלי'):
+            db.delete_runs(USER['id'])
+            ss.runs, ss.run_cache, ss.view = None, None, None
+            st.rerun()
 
 # ── מדריך ───────────────────────────────────────────────────────
 with tab_guide:
     st.markdown("""
 ### איך המערכת מחליטה
 
-יש סדר עדיפות קבוע, ושלב מאוחר לא בא על חשבון שלב שקדם לו.
+המערכת פועלת לפי סדר עדיפות קבוע. שלב מאוחר לעולם לא בא על חשבון שלב שקדם לו.
 
-1. **כל עמדה מאוישת.** תקן נשאר ריק רק כשאין שום דרך לאייש אותו בלי לשבור אילוץ קשיח. כשאין ברירה, מוותרים קודם על המשימות שהקריטיות שלהן נמוכה.
-2. **מנוחה.** מנוחה אחרי כל משמרת לפי מה שהוגדר למשימה, ובלוק מנוחה רצוף לכל חייל, עדיף בלילה.
-3. **הוגנות.** העומס מתחלק בין החיילים. משימה קשה שוקלת יותר, ושעת לילה נספרת כשעה וחצי.
+1. **כיסוי עמדות — מעל הכול.** קודם כול מאיישים כל תקן שאפשר. תקן נשאר ריק רק כשאין שום
+   דרך לאייש אותו בלי להפר אילוץ קשיח. כשאין ברירה, מוותרים קודם על המשימות שהקריטיות שלהן נמוכה.
+2. **מנוחה.** מנוחה אחרי כל משמרת לפי מה שהוגדר למשימה, ובלוק מנוחה רצוף לכל חייל, עדיף בלילה (22:00–06:00).
+3. **הוגנות.** איזון העומס בין החיילים. העומס משוקלל: שעות × עצימות המשימה, ושעת לילה נחשבת 1.5 שעות.
 
-**מה לא נשבר אף פעם:** הסמכה נדרשת, פטורים וחסימות אישיות, חייל בשתי משימות בלעדיות באותו זמן, חייל בשני תקנים באותה משמרת, והנחיות המפקד.
+**אילוצים קשיחים (לא מופרים אף פעם):** הסמכה נדרשת · פטורים, חסימות אישיות ותפקידים חסומים ·
+חייל לא נמצא בשתי משימות בלעדיות באותו זמן · חייל לא תופס שני תקנים באותה משמרת · הנחיות מפקד.
 
-המערכת בונה את עיקר השבצ"ק. כל פשרה שנדרשה מופיעה בלשונית "לאישור המפקד", ואת התיקונים הקטנים עושים על הקובץ שמורידים.
+**כוננות (משימה שיתופית):** מותרת במקביל לכל משימה אחרת, ואינה נחשבת הפרעה למנוחה.
 
 ### איך כותבים שעות
+
+| כותבים | המשמעות |
+|---|---|
+| `8-20` | מ-08:00 עד 20:00 (12 שעות; שעת הסיום אינה כלולה) |
+| `08:30-16:00` | בדיוק מ-08:30 עד 16:00 |
+| `22-6` | מ-22:00 עד 06:00 למחרת (חוצה חצות) |
+| `8-12, 16-20` | שני חלונות נפרדים |
+| `all` או תא ריק | במשימה: כל היממה. בחסימת חייל: תא ריק = אין חסימה |
+
+### קובץ חיילים
+
+| עמודה | הסבר | דוגמה |
+|---|---|---|
+| מספר אישי | מזהה ייחודי | 7001 |
+| שם מלא | שם להצגה | נועם לוי |
+| פטורים | מס"ד של משימות שהחייל פטור מהן | 104, 105 |
+| הסמכות | תפקידים והסמכות | נהג, חובש |
+| שעות חסימה | מתי החייל לא זמין | 08:30-12:00 |
+
+### קובץ משימות
+
+| עמודה | הסבר | דוגמה |
+|---|---|---|
+| מס"ד משימה | מזהה | 101 |
+| שם המשימה | שם קצר | ש"ג |
+| סד"כ נדרש למשימה | כמה חיילים בכל משמרת | 2 |
+| משך משמרת | בשעות (אפשר גם 1.5) | 4 |
+| שעות מנוחה בין משימות | מנוחה נדרשת אחרי משמרת | 8 |
+| אישור חפיפה בין משימות | TRUE = כוננות / משימה שיתופית | FALSE |
+| שעות פעילות | מתי המשימה פעילה | all |
+| הסמכה נדרשת | הסמכה לכל תקן; תקנים בלי הסמכה נשארים פתוחים לכולם | מפקד, נהג |
+| דירוג עצימות משימה (1-10) | כמה המשימה קשה; משפיע על חישוב ההוגנות | 7 |
+| תפקידים חסומים | מי לא משובץ למשימה | מפקד |
+| קריטיות (1-10) | לא חובה. כשיש חוסר, משימה קריטית מאוישת קודם | 9 |
+
+### הנחיות מפקד (לא חובה)
+
+קובץ שלישי עם העמודות: **מספר אישי · מס"ד משימה · סוג · שעות**.
+בעמודה "סוג" כותבים `חובה` (החייל חייב לקבל משמרת במשימה הזו) או `אסור` (החייל לא ישובץ אליה).
+העמודה "שעות" מצמצמת את ההנחיה לחלון זמן, למשל `22-2`.
 """)
-    html(html_table(pd.DataFrame([
-        ['8-20', 'מ-08:00 עד 20:00. שעת הסיום אינה כלולה'],
-        ['08:30-16:00', 'בדיוק מ-08:30 עד 16:00'],
-        ['22-6', 'מ-22:00 עד 06:00 למחרת'],
-        ['8-12, 16-20', 'שני חלונות נפרדים'],
-        ['all', 'כל היממה. במשימה גם תא ריק פירושו כל היממה; בחסימה של חייל, תא ריק פירושו שאין חסימה'],
-    ], columns=['כותבים', 'המשמעות']), narrow=True, code_key=True))
-    st.markdown('### העמודות של החיילים')
-    html(html_table(pd.DataFrame([
-        ['מספר אישי', 'מזהה ייחודי לכל חייל'],
-        ['שם מלא', 'השם שיופיע בשבצ"ק'],
-        ['פטורים', 'מס"ד של משימות שהחייל פטור מהן, למשל 104, 105'],
-        ['הסמכות', 'תפקידים והסמכות, למשל נהג, חובש'],
-        ['שעות חסימה', 'מתי החייל לא זמין, למשל 08:30-12:00'],
-    ], columns=['עמודה', 'מה כותבים']), narrow=True))
-    st.markdown('### העמודות של המשימות')
-    html(html_table(pd.DataFrame([
-        ['מס"ד משימה', 'מספר מזהה, למשל 101'],
-        ['סד"כ נדרש למשימה', 'כמה חיילים בכל משמרת'],
-        ['משך משמרת', 'בשעות. אפשר גם 1.5'],
-        ['שעות מנוחה בין משימות', 'כמה מנוחה מגיעה אחרי משמרת במשימה הזו'],
-        ['אישור חפיפה בין משימות', 'מסומן למשימה כמו כוננות, שמותרת במקביל לכל משימה אחרת'],
-        ['שעות פעילות', 'מתי המשימה פעילה'],
-        ['הסמכה נדרשת', 'הסמכה לכל תקן. "מפקד, נהג" במשימה של 3 פירושו מפקד, נהג ועוד חייל כלשהו'],
-        ['דירוג עצימות משימה', 'מ-1 עד 10. משפיע על חישוב ההוגנות'],
-        ['תפקידים חסומים', 'מי לא משובץ למשימה הזו'],
-        ['קריטיות', 'מ-1 עד 10. כשחסרים חיילים, משימה קריטית מאוישת קודם'],
-    ], columns=['עמודה', 'מה כותבים']), narrow=True))
+
+# ── תבניות ──────────────────────────────────────────────────────
+with tab_templates:
+    box('info', 'הורידו את שלושת הקבצים, מלאו אותם בנתונים שלכם, והעלו אותם בלשונית "שיבוץ". '
+                'כדאי לשמור על שמות העמודות כמו שהם.')
+    d_s, d_t = demo_rows()
+    s_ex, t_ex = rows_to_frames(d_s[:6], d_t)
+    dir_ex = pd.DataFrame([{'מספר אישי': 7003, 'מס"ד משימה': 101, 'סוג': 'אסור', 'שעות': ''},
+                           {'מספר אישי': 7002, 'מס"ד משימה': 105, 'סוג': 'חובה', 'שעות': '22-2'}])
+    st.markdown('**👥 תבנית חיילים**')
+    st.dataframe(s_ex, hide_index=True, **FULL)
+    st.download_button('⬇️ הורדת תבנית חיילים', data=to_excel({'Soldiers': s_ex}),
+                       file_name='Soldiers_template.xlsx', key='tpl_s')
+    st.markdown('**📋 תבנית משימות**')
+    st.dataframe(t_ex, hide_index=True, **FULL)
+    st.download_button('⬇️ הורדת תבנית משימות', data=to_excel({'Tasks': t_ex}),
+                       file_name='Tasks_template.xlsx', key='tpl_t')
+    st.markdown('**📌 תבנית הנחיות מפקד (לא חובה)**')
+    st.dataframe(dir_ex, hide_index=True, **FULL)
+    st.download_button('⬇️ הורדת תבנית הנחיות', data=to_excel({'Directives': dir_ex}),
+                       file_name='Directives_template.xlsx', key='tpl_d')
+    st.markdown('---')
+    st.markdown('**🗂️ קובצי דוגמה מלאים** — 24 חיילים ו-6 משימות, מוכנים להעלאה כמו שהם')
+    full_s, full_t = rows_to_frames(d_s, d_t)
+    e1, e2 = st.columns(2)
+    with e1:
+        st.download_button('⬇️ קובץ חיילים לדוגמה', data=to_excel({'Soldiers': full_s}),
+                           file_name='Soldiers_example.xlsx', key='ex_s', **FULL)
+    with e2:
+        st.download_button('⬇️ קובץ משימות לדוגמה', data=to_excel({'Tasks': full_t}),
+                           file_name='Tasks_example.xlsx', key='ex_t', **FULL)
 
 # ── ניהול (למנהל המערכת בלבד) ───────────────────────────────────
 if USER['is_admin']:
     with tabs[4]:
-        import plotly.express as px
-
-        info = db.status()
-        if info['backend'] == 'postgres':
-            note('הנתונים נשמרים בבסיס נתונים חיצוני, ונשארים גם כשהאתר מאותחל.')
+        st.markdown('### 🔐 נתוני שימוש במערכת')
+        st.caption('המסך הזה מוצג רק למנהל המערכת. משתמשים רגילים רואים רק את הנתונים של עצמם.')
+        if db.status()['backend'] == 'postgres':
+            box('info', '✅ הנתונים נשמרים בבסיס נתונים חיצוני, ונשארים גם כשהאתר מאותחל.')
         else:
-            note('הנתונים נשמרים כרגע בקובץ מקומי על השרת. באתר החי הקובץ נמחק בכל אתחול ובכל עדכון קוד. '
-                 'כדי שהנתונים יישמרו, הוסיפו ב-Secrets את השורה DATABASE_URL.', 'warn')
-
-        if ss.get('admin_ov') is None or st.button('רענון הנתונים'):
+            box('warn', '⚠️ הנתונים נשמרים כרגע בקובץ מקומי על השרת. באתר החי הקובץ נמחק בכל אתחול ובכל '
+                        'עדכון קוד. כדי שהנתונים יישמרו, הוסיפו ב-Secrets את השורה DATABASE_URL.')
+        if ss.get('admin_ov') is None or st.button('🔄 רענון הנתונים'):
             ss.admin_ov = db.admin_overview(days=30)
         ov = ss.admin_ov
         t = ov['totals']
-        html('<div class="facts">'
-             f'<div class="fact"><b>{t["users"]}</b><span>משתמשים רשומים</span></div>'
-             f'<div class="fact"><b>{t["active_week"]}</b><span>משתמשים פעילים בשבוע האחרון</span></div>'
-             f'<div class="fact"><b>{t["logins"]}</b><span>כניסות למערכת</span></div>'
-             f'<div class="fact"><b>{t["runs"]}</b><span>שיבוצים שנוצרו, בכיסוי ממוצע של {t["avg_coverage"]:.0f}%</span></div>'
-             '</div>')
+        st.markdown(f"""
+        <div class="metric-row">
+          <div class="metric-card"><div class="mc-label">משתמשים רשומים</div>
+            <div class="mc-value">{t['users']}</div><div class="mc-sub">מאז ההשקה</div></div>
+          <div class="metric-card"><div class="mc-label">פעילים בשבוע האחרון</div>
+            <div class="mc-value">{t['active_week']}</div><div class="mc-sub">משתמשים שונים</div></div>
+          <div class="metric-card"><div class="mc-label">כניסות למערכת</div>
+            <div class="mc-value">{t['logins']}</div><div class="mc-sub">סה"כ</div></div>
+          <div class="metric-card"><div class="mc-label">שיבוצים שנוצרו</div>
+            <div class="mc-value">{t['runs']}</div>
+            <div class="mc-sub">כיסוי ממוצע {t['avg_coverage']:.0f}% · {t['avg_seconds']:.0f} שנ׳ לחישוב</div></div>
+        </div>""", unsafe_allow_html=True)
 
-        st.markdown('### פעילות יומית, 30 הימים האחרונים')
-        daily = ov['daily'][ov['daily']['event'].isin(EVENT_COLORS)]
-        if daily.empty:
-            html('<p class="hint">עוד אין פעילות של משתמשים.</p>')
+        st.markdown('#### פעילות יומית ב-30 הימים האחרונים')
+        fig = usage_chart(ov['daily'])
+        if fig is None:
+            box('warn', 'עדיין אין פעילות של משתמשים.')
         else:
-            fig = px.line(daily, x='day', y='n', color='event', markers=True,
-                          color_discrete_map=EVENT_COLORS, category_orders={'event': list(EVENT_COLORS)})
-            fig.update_traces(line_width=2, marker_size=8,
-                              hovertemplate='%{x}<br>%{fullData.name}: %{y}<extra></extra>')
-            fig.update_layout(height=320, plot_bgcolor='white', paper_bgcolor='rgba(0,0,0,0)',
-                              font=dict(family='IBM Plex Sans Hebrew, Arial', size=13, color=INK),
-                              margin=dict(t=40, b=30, l=20, r=20),
-                              legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0, title_text=''))
-            fig.update_xaxes(title_text='', type='category', gridcolor='#ECECE8', linecolor=RULE)
-            fig.update_yaxes(title_text='פעולות ביום', rangemode='tozero', gridcolor='#ECECE8', linecolor=RULE,
-                             tickformat=',d', dtick=1 if daily['n'].max() <= 10 else None)
             st.plotly_chart(fig, key='usage', **FULL)
+            with st.expander('הנתונים כטבלה'):
+                st.dataframe(ov['daily'].rename(columns={'day': 'תאריך', 'event': 'פעולה', 'n': 'כמות',
+                                                         'users': 'משתמשים שונים'})
+                             [['תאריך', 'פעולה', 'כמות', 'משתמשים שונים']], hide_index=True, **FULL)
 
-        st.markdown('### משתמשים')
-        if ov['users'].empty:
-            html('<p class="hint">עוד אין משתמשים רשומים.</p>')
-        else:
-            html(html_table(ov['users'].fillna('')))
-        with st.expander('100 הפעולות האחרונות'):
-            html(html_table(ov['recent']))
-        st.download_button('הורדת נתוני השימוש ל-Excel',
-                           data=to_excel({'משתמשים': ov['users'],
-                                          'פעילות יומית': ov['daily'].rename(columns={
-                                              'day': 'תאריך', 'event': 'פעולה', 'n': 'כמות', 'users': 'משתמשים שונים'})
-                                          [['תאריך', 'פעולה', 'כמות', 'משתמשים שונים']],
+        st.markdown('#### משתמשים')
+        st.dataframe(ov['users'], hide_index=True, **FULL)
+        st.markdown('#### 100 הפעולות האחרונות')
+        st.dataframe(ov['recent'], hide_index=True, **FULL)
+        st.download_button('📥 הורדת נתוני השימוש (Excel)',
+                           data=to_excel({'משתמשים': ov['users'], 'פעילות יומית': ov['daily'],
                                           'פעולות אחרונות': ov['recent']}),
                            file_name='usage_report.xlsx', key='usage_dl')
 

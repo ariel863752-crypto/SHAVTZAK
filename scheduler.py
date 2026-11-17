@@ -15,6 +15,10 @@ scheduler.py — מנוע השיבוץ של שבצ"ק (ללא תלות ב-Stream
   * פונקציה אחת, evaluate(), מודדת כל שבצ"ק (של המערכת, של השיבוץ הבסיסי
     או ידני) באותם מדדים בדיוק.
 
+שבצ"ק של כמה ימים (solve_multi): משבצים יום אחרי יום. כל יום מקבל מהימים שלפניו
+שני דברים: המנוחה שחייל עדיין חייב אחרי המשמרת האחרונה של אתמול, והעומס שכל חייל
+כבר צבר. כך ההוגנות מתאזנת לאורך כל התקופה ולא רק בתוך יום אחד.
+
 אילוצים קשיחים:
   H1  כל תקן מאויש בחייל אחד, או מסומן כחוסר כשאין אפשרות מתמטית
   H2  הסמכה נדרשת לתקן
@@ -228,6 +232,11 @@ class Soldier:
     roles: set = field(default_factory=set)         # הסמכות / תפקידים
     blocked_clock: list = field(default_factory=list)
     blocked: list = field(default_factory=list)     # על ציר היממה (מתמלא ב-prepare)
+    absent_days: set = field(default_factory=set)   # ימים שלמים שבהם החייל לא נמצא (1 = היום הראשון)
+    day_blocked: dict = field(default_factory=dict)  # יום → חסימת שעות לאותו יום בלבד
+    # מצב שעובר מיום ליום בשבצ"ק של כמה ימים:
+    carry: list = field(default_factory=list)       # [(סיום יחסי לתחילת היום ≤ 0, מנוחה נדרשת, שם המשימה)]
+    prior_load: int = 0                             # העומס המשוקלל שנצבר בימים הקודמים
 
 
 @dataclass
@@ -280,8 +289,48 @@ class Directive:
     hours_clock: list = field(default_factory=list)   # ריק = כל משמרות המשימה
 
 
+def parse_absences(val):
+    """
+    מפענח את העמודה "ימי היעדרות". מחזיר (ימים שלמים, {יום: טווחי שעות}, קטעים לא מובנים).
+      "3"         היום השלישי כולו            "3-5"        הימים 3 עד 5
+      "2(8-12)"   ביום 2 בלבד, מ-08:00 עד 12:00            "1, 4(14-18), 6-7"   שילוב
+    """
+    if _is_blank(val):
+        return set(), {}, []
+    text = str(val).strip().replace('–', '-').replace('—', '-').replace('־', '-')
+    if re.fullmatch(r'\d+\.0', text):
+        text = text[:-2]
+    days, partial, bad = set(), {}, []
+    pattern = re.compile(r'\s*(\d{1,2})\s*(?:-\s*(\d{1,2}))?\s*(?:\(([^)]*)\))?\s*')
+    pos = 0
+    while pos < len(text):
+        if text[pos] in ',;\n ':
+            pos += 1
+            continue
+        m = pattern.match(text, pos)
+        nxt = m.end() if m else len(text)
+        if not m or (nxt < len(text) and text[nxt] not in ',;\n'):
+            end = min([i for i in (text.find(',', pos), text.find(';', pos)) if i >= 0] or [len(text)])
+            bad.append(text[pos:end].strip())
+            pos = end + 1
+            continue
+        d1, d2 = int(m.group(1)), int(m.group(2) or m.group(1))
+        if d1 < 1 or d2 < d1:
+            bad.append(m.group(0).strip())
+        elif m.group(3) is None:
+            days.update(range(d1, d2 + 1))
+        else:
+            iv, bad_h = parse_ranges(m.group(3), blank_means_all=True)
+            bad += bad_h
+            for d in range(d1, d2 + 1):
+                partial[d] = partial.get(d, []) + iv
+        pos = nxt + 1
+    return days, partial, bad
+
+
 def soldier_from_row(row: dict) -> tuple:
     blocked, bad = parse_ranges(row.get('blocked_hours'), blank_means_all=False)
+    absent, partial, bad_abs = parse_absences(row.get('absences'))
     s = Soldier(
         sid=_norm_id(row.get('personal_id')),
         name=str(row.get('full_name', '')).strip(),
@@ -289,8 +338,11 @@ def soldier_from_row(row: dict) -> tuple:
                 if re.fullmatch(r'\d+(\.0)?', x)},
         roles=set(_split_list(row.get('roles'))),
         blocked_clock=blocked,
+        absent_days=absent,
+        day_blocked=partial,
     )
     warn = [f'חייל {s.name}: לא הצלחתי לפענח את שעות החסימה "{b}"' for b in bad]
+    warn += [f'חייל {s.name}: לא הצלחתי לפענח את ימי ההיעדרות "{b}"' for b in bad_abs]
     return s, warn
 
 
@@ -356,6 +408,7 @@ def rows_from_excel(s_df: pd.DataFrame, t_df: pd.DataFrame):
         'exemptions':    _find_col(s_df, ['פטור']),
         'roles':         _find_col(s_df, ['הסמכ', 'תפקיד']),
         'blocked_hours': _find_col(s_df, ['חסימה', 'חסום']),
+        'absences':      _find_col(s_df, ['היעדר', 'העדר', 'חיסור']),
     }
     tc = {
         'task_no':        _find_col(t_df, ['מס"ד', 'מסד', 'מספר']),
@@ -544,7 +597,7 @@ def greedy_baseline(soldiers, shifts, elig, cfg: Config, directives=None):
     n = len(soldiers)
     sid_idx = {s.sid: i for i, s in enumerate(soldiers)}
     busy = {i: [] for i in range(n)}      # משמרות בלעדיות של החייל
-    load = [0] * n
+    load = [s.prior_load for s in soldiers]   # בשבצ"ק של כמה ימים: ממשיכים מהעומס שנצבר
     in_shift = set()
     filled = {}
     assign = []
@@ -557,6 +610,8 @@ def greedy_baseline(soldiers, shifts, elig, cfg: Config, directives=None):
 
     def rest_short(si, sh):
         worst = 0
+        for end_rel, rest, _ in soldiers[si].carry:       # מנוחה שנשארה מאתמול
+            worst = max(worst, end_rel + rest - sh.start)
         for o in busy[si]:
             if o.end <= sh.start:
                 worst = max(worst, o.end + o.task.rest - sh.start)
@@ -687,6 +742,18 @@ def evaluate(soldiers, shifts, assign, cfg: Config) -> dict:
                 if i != j and a.end <= b.start < a.end + a.task.rest:
                     u = math.ceil((a.end + a.task.rest - b.start) / 30)
                     rest_cost += cfg.w_rest * u * u
+        # מנוחה שנשארה מהמשמרת האחרונה של אתמול (שבצ"ק של כמה ימים)
+        for end_rel, rest, prev_name in s.carry:
+            for b in excl:
+                if b.start < end_rel + rest:
+                    u = math.ceil((end_rel + rest - b.start) / 30)
+                    rest_cost += cfg.w_rest * u * u
+            if excl and excl[0].start < end_rel + rest:
+                rest_viol.append({
+                    'sid': s.sid, 'name': s.name,
+                    'after': prev_name + ' (מאתמול)', 'before': excl[0].task.name,
+                    'at': end_rel, 'required': rest, 'actual': excl[0].start - end_rel,
+                })
         for a, b in zip(excl, excl[1:]):
             if a.end <= b.start < a.end + a.task.rest:
                 rest_viol.append({
@@ -727,6 +794,7 @@ def evaluate(soldiers, shifts, assign, cfg: Config) -> dict:
     return {
         'hard_violations': hard,
         'slots_total': slots_total,
+        'slot_minutes_total': slot_min_total,
         'short_slots': sum(x['missing'] for x in shortages),
         'short_minutes': short_min,
         'short_weighted': short_weighted,
@@ -798,8 +866,9 @@ def _new_solver(cfg: Config, seconds: float):
     return solver
 
 
-def _solve_with_patience(model, solver, patience: float):
-    """מריץ את הפותר, ועוצר מוקדם אם עבר 'patience' שניות בלי שיפור בפתרון."""
+def _solve_with_patience(model, solver, patience: float, stop_at=None):
+    """מריץ את הפותר, ועוצר מוקדם אם עבר 'patience' שניות בלי שיפור בפתרון,
+    או מיד כשהתקבל פתרון בערך stop_at (הערך הנמוך ביותר שאפשרי, ולכן אין מה לחפש עוד)."""
     class _Progress(cp_model.CpSolverSolutionCallback):
         def __init__(self):
             super().__init__()
@@ -810,6 +879,8 @@ def _solve_with_patience(model, solver, patience: float):
             v = self.ObjectiveValue()
             if self.best is None or v < self.best - 0.5:
                 self.best, self.last = v, time.time()
+            if stop_at is not None and v <= stop_at + 0.5:
+                self.StopSearch()
 
     cb = _Progress()
     done = threading.Event()
@@ -954,7 +1025,7 @@ def _solve_cpsat(soldiers, shifts, elig, cfg: Config, directives, hint_assign,
                 hint(var, wi == pick)
             hint(zf, pick is None)
         if fair:
-            vals = [sum(shifts[k].load // fair['g'] for (s2, k) in inside if s2 == si)
+            vals = [fair['prior'][si] + sum(shifts[k].load // fair['g'] for (s2, k) in inside if s2 == si)
                     for si in range(n)]
             for si in range(n):
                 hint(fair['loads'][si], vals[si])
@@ -974,14 +1045,17 @@ def _solve_cpsat(soldiers, shifts, elig, cfg: Config, directives, hint_assign,
 
     stages = []
 
-    def run_stage(name, objective, budget):
+    def run_stage(name, objective, budget, floor=None):
+        """floor: ערך שאי אפשר לרדת ממנו. פתרון שמגיע אליו הוא אופטימלי, ועוצרים מיד."""
         model.Minimize(objective)
         solver = _new_solver(cfg, budget)
         t0 = time.time()
-        status = _solve_with_patience(model, solver, cfg.patience)
+        status = _solve_with_patience(model, solver, cfg.patience, stop_at=floor)
         sname = solver.StatusName(status)
         ok = status in (cp_model.OPTIMAL, cp_model.FEASIBLE)
         val = int(round(solver.ObjectiveValue())) if ok else None
+        if ok and floor is not None and val <= floor:
+            sname = 'OPTIMAL'
         stages.append({'שלב': name, 'סטטוס': _STATUS_HE.get(sname, sname),
                        'ערך': val, 'שניות': round(time.time() - t0, 2), '_status': sname})
         log(f'{name}: {_STATUS_HE.get(sname, sname)}')
@@ -990,7 +1064,7 @@ def _solve_cpsat(soldiers, shifts, elig, cfg: Config, directives, hint_assign,
     # ══ שלב 1: כיסוי ═════════════════════════════════════════════
     add_hints(hint_assign)
     obj1 = sum(short_terms)
-    solver, v1, sname = run_stage('1. כיסוי עמדות', obj1, max(2.0, cfg.time_limit * 0.3))
+    solver, v1, sname = run_stage('1. כיסוי עמדות', obj1, max(2.0, cfg.time_limit * 0.3), floor=0)
     if solver is None:
         return None, stages, notes, sname
     best = extract(solver)
@@ -1019,6 +1093,14 @@ def _solve_cpsat(soldiers, shifts, elig, cfg: Config, directives, hint_assign,
                 model.AddBoolOr([a[si, k1].Not(), a[si, k2].Not(), v])
                 well_terms.append(v * cost)
                 rest_vars.append((v, si, k1, k2))
+
+    # מנוחה שנשארה מאתמול: קנס ישיר על משמרת שמתחילה לפני שהמנוחה הסתיימה
+    for si in range(n):
+        for end_rel, rest, _ in soldiers[si].carry:
+            for sh in excl:
+                if sh.start < end_rel + rest and (si, sh.idx) in a:
+                    uu = math.ceil((end_rel + rest - sh.start) / 30)
+                    well_terms.append(a[si, sh.idx] * (cfg.w_rest * uu * uu))
 
     night = night_intervals(cfg)
     windows = sleep_windows(cfg, _grid(excl or shifts), night)
@@ -1059,28 +1141,39 @@ def _solve_cpsat(soldiers, shifts, elig, cfg: Config, directives, hint_assign,
     elif remaining() > 1:
         obj2 = sum(well_terms) + well_const
         add_hints(best)
-        solver, val, _ = run_stage('2. מנוחה ושינה', obj2, max(2.0, remaining() * 0.5))
+        solver, val, _ = run_stage('2. מנוחה ושינה', obj2, max(2.0, remaining() * 0.5), floor=well_const)
         if solver is not None:
             best = extract(solver)
         # נועלים לפי הערך של השיבוץ הטוב ביותר שבידינו (מחושב באופן בלתי תלוי)
         v2 = evaluate(soldiers, shifts, best, cfg)['wellbeing']
         model.Add(obj2 <= v2 + int(cfg.wellbeing_slack * max(0, v2 - well_const)))
 
+    # נקודת הפתיחה לשלב ההוגנות: אם השיבוץ הבסיסי עומד בכיסוי וברווחה שננעלו והעומס בו מאוזן יותר,
+    # מתחילים ממנו. כך השלב השלישי לא מתחיל מנקודה גרועה יותר ממה שכבר יש בידינו.
+    m_best = evaluate(soldiers, shifts, best, cfg)
+    if (hint_assign and not m_hint['hard_violations'] and m_hint['short_weighted'] <= m_best['short_weighted']
+            and m_hint['wellbeing'] <= m_best['wellbeing']
+            and fairness_score(soldiers, m_hint) < fairness_score(soldiers, m_best)):
+        best = list(hint_assign)
+
     # ══ שלב 3: הוגנות — עומס משוקלל ═══════════════════════════════
     if n >= 2 and remaining() > 1:
         g = reduce(math.gcd, [sh.load for sh in shifts if sh.load] or [1])
-        top = max(sum(sh.load // g for sh in shifts), 1)
+        # העומס שנצבר בימים הקודמים. רק ההפרשים בין החיילים חשובים, ולכן מורידים את המינימום.
+        prior = [int(round(s.prior_load / g)) for s in soldiers]
+        prior = [p - min(prior) for p in prior]
+        top = max(sum(sh.load // g for sh in shifts), 1) + max(prior)
         loads = []
         for si in range(n):
             terms = [a[si, sh.idx] * (sh.load // g) for sh in shifts if (si, sh.idx) in a]
             lv = model.NewIntVar(0, top, f'L_{si}')
-            model.Add(lv == (sum(terms) if terms else 0))
+            model.Add(lv == (sum(terms) if terms else 0) + prior[si])
             loads.append(lv)
         lmax = model.NewIntVar(0, top, 'Lmax')
         lmin = model.NewIntVar(0, top, 'Lmin')
         model.AddMaxEquality(lmax, loads)
         model.AddMinEquality(lmin, loads)
-        avg = int(round(sum(shifts[k].load // g for _, k, _ in best) / n))
+        avg = int(round((sum(prior) + sum(shifts[k].load // g for _, k, _ in best)) / n))
         # קנס קמור על הסטייה מהממוצע (קירוב מקטעי לריבוע הסטייה, כלומר לשונות):
         # סטייה גדולה של חייל אחד יקרה יותר מכמה סטיות קטנות.
         step = max(1, avg // 4)
@@ -1099,7 +1192,7 @@ def _solve_cpsat(soldiers, shifts, elig, cfg: Config, directives, hint_assign,
                 row.append((j, ev))
             extra.append(row)
         fair.update(g=g, avg=avg, step=step, loads=loads, devs=devs, extra=extra,
-                    lmax=lmax, lmin=lmin)
+                    lmax=lmax, lmin=lmin, prior=prior)
         obj3 = sum(fair_terms) + (lmax - lmin)
         add_hints(best)
         solver, _, _ = run_stage('3. הוגנות', obj3, max(2.0, remaining()))
@@ -1107,6 +1200,21 @@ def _solve_cpsat(soldiers, shifts, elig, cfg: Config, directives, hint_assign,
             best = extract(solver)
 
     return best, stages, notes, 'OK'
+
+
+def fairness_score(soldiers, metrics: dict) -> float:
+    """סכום ריבועי הסטיות של העומס המצטבר (כולל ימים קודמים) מהממוצע. נמוך יותר = הוגן יותר."""
+    raw = metrics.get('_loads_raw', {})
+    vals = [s.prior_load + raw.get(s.sid, 0) for s in soldiers]
+    if not vals:
+        return 0.0
+    mean = sum(vals) / len(vals)
+    return sum((v - mean) ** 2 for v in vals)
+
+
+def _rank(soldiers, metrics: dict) -> tuple:
+    """סדר העדיפות כמספרים להשוואה: כיסוי, אחר כך רווחה, אחר כך הוגנות."""
+    return (metrics['short_weighted'], metrics['wellbeing'], round(fairness_score(soldiers, metrics), 3))
 
 
 def solve_schedule(soldiers, tasks, cfg: Optional[Config] = None, directives=None,
@@ -1152,6 +1260,12 @@ def solve_schedule(soldiers, tasks, cfg: Optional[Config] = None, directives=Non
     if metrics['hard_violations'] and not base_metrics['hard_violations']:
         warnings.append('נמצאה הפרה של אילוץ קשיח בפתרון — הוחזר השיבוץ הבסיסי.')
         final, metrics, engine = baseline, base_metrics, 'בסיסי'
+    elif (engine == 'CP-SAT' and not base_metrics['hard_violations']
+          and _rank(soldiers, base_metrics) < _rank(soldiers, metrics)):
+        # הפותר לא הספיק להשתפר מעבר לשיבוץ הבסיסי בזמן שהוקצב (קורה בבעיות גדולות מאוד)
+        warnings.append('בזמן החישוב שהוקצב לא נמצא שיבוץ טוב יותר מהשיבוץ הבסיסי, ולכן הוא מוצג. '
+                        'אפשר להגדיל את זמן החישוב המרבי ולהריץ שוב.')
+        final, metrics, engine = baseline, base_metrics, 'בסיסי'
 
     return {
         'shifts': shifts, 'assign': final, 'baseline': baseline,
@@ -1160,6 +1274,185 @@ def solve_schedule(soldiers, tasks, cfg: Optional[Config] = None, directives=Non
         'stages': stages, 'warnings': warnings, 'engine': engine,
         'seconds': round(time.time() - t0, 2), 'cfg': cfg,
     }
+
+
+# ══════════════════════════════════════════════════════════════════
+# 7ב. שבצ"ק של כמה ימים
+# ══════════════════════════════════════════════════════════════════
+MAX_DAYS = 7      # המשך המרבי של שבצ"ק אחד, בימים
+
+
+def _day_soldiers(soldiers, day: int, carry: dict, prior: dict):
+    """עותקים של החיילים שנמצאים ביום הזה, עם החסימות של אותו יום ועם מה שעבר מהימים הקודמים."""
+    out = []
+    for s in soldiers:
+        if day in s.absent_days:
+            continue
+        out.append(Soldier(
+            sid=s.sid, name=s.name, exempt=set(s.exempt), roles=set(s.roles),
+            blocked_clock=list(s.blocked_clock) + list(s.day_blocked.get(day, [])),
+            carry=list(carry.get(s.sid, [])), prior_load=prior.get(s.sid, 0)))
+    return out
+
+
+def _next_state(all_soldiers, present, shifts, assign, metrics, prior: dict):
+    """מה עובר ליום הבא: מנוחה שעוד לא הסתיימה, והעומס המצטבר."""
+    carry = {}
+    for sid, k, _ in assign:
+        sh = shifts[k]
+        if not sh.task.shared and sh.task.rest > 0 and sh.end - DAY + sh.task.rest > 0:
+            carry.setdefault(sid, []).append((sh.end - DAY, sh.task.rest, sh.task.name))
+    raw = metrics['_loads_raw']
+    here = {s.sid for s in present}
+    avg = (sum(raw.values()) / len(raw)) if raw else 0
+    nxt = {}
+    for s in all_soldiers:
+        # מי שלא היה ביום הזה מקבל "זיכוי" של העומס הממוצע, כדי שלא יצטרך להשלים כשיחזור
+        nxt[s.sid] = prior.get(s.sid, 0) + (raw.get(s.sid, 0) if s.sid in here else int(round(avg)))
+    return carry, nxt
+
+
+def combine_metrics(day_metrics: list, soldiers, cfg: Config) -> dict:
+    """מאחד מדדים של כמה ימים למדד אחד של כל התקופה, באותם שמות שדות כמו ביום בודד."""
+    if len(day_metrics) == 1:
+        m = dict(day_metrics[0])
+        m.update(num_days=1, soldier_days=len(m['soldiers']))
+        return m
+    name_of = {s.sid: s.name for s in soldiers}
+    tot = lambda key: sum(m[key] for m in day_metrics)
+    stats = {}
+    for m in day_metrics:
+        for sid, st in m['soldiers'].items():
+            a = stats.setdefault(sid, {
+                'name': name_of.get(sid, st['name']), 'days_present': 0, 'minutes': 0,
+                'shared_minutes': 0, 'night_minutes': 0, 'load': 0, 'shifts': 0,
+                'longest_rest': DAY, 'night_rest': DAY, 'full_rest_days': 0})
+            a['days_present'] += 1
+            for key in ('minutes', 'shared_minutes', 'night_minutes', 'load', 'shifts'):
+                a[key] += st[key]
+            a['longest_rest'] = min(a['longest_rest'], st['longest_rest'])   # היום הקשה ביותר
+            a['night_rest'] = min(a['night_rest'], st['night_rest'])
+            a['full_rest_days'] += int(st['longest_rest'] >= cfg.sleep_target)
+    for s in soldiers:   # מי שלא היה באף יום
+        stats.setdefault(s.sid, {
+            'name': s.name, 'days_present': 0, 'minutes': 0, 'shared_minutes': 0,
+            'night_minutes': 0, 'load': 0, 'shifts': 0, 'longest_rest': DAY, 'night_rest': DAY,
+            'full_rest_days': 0})
+    stats = {s.sid: stats[s.sid] for s in soldiers if s.sid in stats}
+    unit = 2 * 60
+    here = [st for st in stats.values() if st['days_present']]
+    loads = [st['load'] / st['days_present'] for st in here] or [0]     # עומס ממוצע ליום נוכחות
+    mins = [st['minutes'] / st['days_present'] for st in here] or [0]
+    slot_min = tot('slot_minutes_total')
+    viol, hard, shortages = [], [], []
+    for d, m in enumerate(day_metrics, start=1):
+        viol += [dict(v, day=d) for v in m['rest_violations']]
+        hard += [f'יום {d}: {h}' for h in m['hard_violations']]
+        shortages += [dict(x, day=d) for x in m['shortages']]
+    mean = sum(loads) / len(loads)
+    return {
+        'num_days': len(day_metrics),
+        'soldier_days': sum(len(m['soldiers']) for m in day_metrics),
+        'hard_violations': hard,
+        'slots_total': tot('slots_total'),
+        'slot_minutes_total': slot_min,
+        'short_slots': tot('short_slots'),
+        'short_minutes': tot('short_minutes'),
+        'short_weighted': tot('short_weighted'),
+        'coverage_pct': 100.0 * (1 - tot('short_minutes') / slot_min) if slot_min else 100.0,
+        'shortages': shortages,
+        'rest_cost': tot('rest_cost'), 'sleep_cost': tot('sleep_cost'), 'wellbeing': tot('wellbeing'),
+        'rest_violations': viol,
+        'rest_short_minutes': tot('rest_short_minutes'),
+        'full_rest': tot('full_rest'), 'full_night_rest': tot('full_night_rest'), 'no_rest': tot('no_rest'),
+        'soldiers': stats,
+        'load_max': max(loads) / unit, 'load_min': min(loads) / unit,
+        'load_gap': (max(loads) - min(loads)) / unit,
+        'load_std': (sum((x - mean) ** 2 for x in loads) / len(loads)) ** 0.5 / unit,
+        'hours_gap': (max(mins) - min(mins)) / 60,
+        'hours_avg': sum(mins) / 60 / max(1, len(mins)),
+        '_loads_raw': {sid: st['load'] for sid, st in stats.items()},
+    }
+
+
+def solve_multi(soldiers, tasks, cfg: Optional[Config] = None, directives=None, days: int = 1,
+                log: Optional[Callable] = None, progress: Optional[Callable] = None) -> dict:
+    """
+    שבצ"ק של יום אחד או של כמה ימים רצופים.
+    משבצים יום אחרי יום; כל יום "יודע" מה קרה בימים שלפניו (מנוחה שעוד לא הסתיימה ועומס שנצבר).
+    cfg.time_limit הוא תקרת הזמן ליום אחד.
+    מחזיר dict עם: num_days, days (תוצאה מלאה לכל יום), rows (כל השורות, בדקות מתחילת התקופה),
+    metrics ו-baseline_metrics (של כל התקופה), absent, warnings, stages, engine, seconds.
+    """
+    cfg = cfg or Config()
+    days = max(1, min(int(days), MAX_DAYS))
+    t0 = time.time()
+    directives = directives or []
+    state = {'final': ({}, {}), 'base': ({}, {})}     # (מנוחה שעוברת, עומס מצטבר)
+    out_days, rows, warn_by_day, stages, reasons = [], [], [], [], []
+    final_m, base_m, engines = [], [], []
+
+    for d in range(1, days + 1):
+        if progress:
+            progress(d, days)
+        present = _day_soldiers(soldiers, d, *state['final'])
+        here = {s.sid for s in present}
+        day_dir = [x for x in directives if x.sid in here or x.sid not in {s.sid for s in soldiers}]
+        res = solve_schedule(present, tasks, cfg, day_dir, log)
+        shifts = res['shifts']
+        final_m.append(res['metrics'])
+        engines.append(res['engine'])
+
+        # השיבוץ הבסיסי ("לפני") מתקדם בשרשרת משלו, עם ההיסטוריה של עצמו
+        if d == 1:
+            b_present, b_shifts = present, shifts
+            b_assign, b_metrics = res['baseline'], res['baseline_metrics']
+        else:
+            b_present = _day_soldiers(soldiers, d, *state['base'])
+            b_shifts, _ = prepare(b_present, tasks, cfg)
+            b_assign = greedy_baseline(b_present, b_shifts, eligibility(b_present, b_shifts), cfg, day_dir)
+            b_metrics = evaluate(b_present, b_shifts, b_assign, cfg)
+        base_m.append(b_metrics)
+
+        day_rows = assignment_rows(present, shifts, res['assign'], cfg)
+        off = (d - 1) * DAY
+        rows += [dict(r, start_min=r['start_min'] + off, end_min=r['end_min'] + off) for r in day_rows]
+        absent = [s.sid for s in soldiers if s.sid not in here]
+        out_days.append({'day': d, 'result': res, 'present': [(s.sid, s.name) for s in present],
+                         'absent': absent, 'rows': day_rows})
+        warn_by_day.append(res['warnings'])
+        stages += [dict({'יום': d}, **st) for st in res['stages']]
+        reasons += [dict({'יום': d}, **r) if days > 1 else r for r in res['shortage_reasons']]
+
+        state['final'] = _next_state(soldiers, present, shifts, res['assign'], res['metrics'],
+                                     state['final'][1])
+        state['base'] = _next_state(soldiers, b_present, b_shifts, b_assign, b_metrics, state['base'][1])
+
+    # אזהרה שחוזרת בכל הימים מוצגת פעם אחת; אחרת עם מספר היום
+    warnings, seen = [], set()
+    for d, ws in enumerate(warn_by_day, start=1):
+        for w in ws:
+            everywhere = all(w in other for other in warn_by_day)
+            text = w if (everywhere or days == 1) else f'יום {d}: {w}'
+            if text not in seen:
+                seen.add(text)
+                warnings.append(text)
+    never = [s.name for s in soldiers if all(s.sid in dd['absent'] for dd in out_days)]
+    if never:
+        warnings.append('חיילים שלא נמצאים באף אחד מימי השבצ"ק ולכן לא שובצו: ' + ', '.join(never))
+
+    return {
+        'num_days': days, 'days': out_days, 'rows': rows,
+        'day_metrics': final_m, 'baseline_day_metrics': base_m,
+        'metrics': combine_metrics(final_m, soldiers, cfg),
+        'baseline_metrics': combine_metrics(base_m, soldiers, cfg),
+        'absent': {dd['day']: dd['absent'] for dd in out_days if dd['absent']},
+        'shortage_reasons': reasons, 'stages': stages, 'warnings': warnings,
+        'engine': 'CP-SAT' if all(e == 'CP-SAT' for e in engines) else
+                  ('בסיסי' if all(e == 'בסיסי' for e in engines) else 'CP-SAT + בסיסי'),
+        'seconds': round(time.time() - t0, 2), 'cfg': cfg,
+    }
+
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1186,10 +1479,28 @@ def assignment_rows(soldiers, shifts, assign, cfg: Config) -> list:
     return rows
 
 
+def row_day(r: dict) -> int:
+    """היום (1, 2, ...) שאליו שייכת שורת שיבוץ. הזמנים נשמרים בדקות מתחילת התקופה."""
+    return r['start_min'] // DAY + 1
+
+
+def num_days_of(rows: list) -> int:
+    return max((row_day(r) for r in rows), default=1)
+
+
+def rows_of_day(rows: list, day: int) -> list:
+    """שורות של יום אחד, בדקות יחסיות לתחילת אותו יום"""
+    off = (day - 1) * DAY
+    return [dict(r, start_min=r['start_min'] - off, end_min=r['end_min'] - off)
+            for r in rows if row_day(r) == day]
+
+
 def task_table(rows: list, day_start: int) -> pd.DataFrame:
     out = []
+    multi = num_days_of(rows) > 1
     for r in rows:
         out.append({
+            **({'יום': row_day(r)} if multi else {}),
             'משימה': r['task_name'],
             'התחלה': fmt_clock(r['start_min'], day_start),
             'סיום': fmt_clock(r['end_min'], day_start),
@@ -1202,11 +1513,14 @@ def task_table(rows: list, day_start: int) -> pd.DataFrame:
     return df
 
 
-def soldier_grid(rows: list, roster: list, day_start: int) -> pd.DataFrame:
+def soldier_grid(rows: list, roster: list, day_start: int, absent=()) -> pd.DataFrame:
     """
     שורה לכל חייל, עמודה לכל משבצת זמן (שעה, או חצי שעה אם יש משמרות לא עגולות).
+    rows: שורות של יום אחד (דקות יחסיות לתחילת היום).
     roster: רשימת (מספר אישי, שם) של כל החיילים, גם אלה שלא שובצו.
+    absent: מספרים אישיים של מי שלא נמצא ביום הזה.
     """
+    absent = {str(x) for x in absent}
     vals = [60] + [r['start_min'] for r in rows] + [r['end_min'] for r in rows]
     g = reduce(math.gcd, vals)
     step = 60 if g % 60 == 0 else (30 if g % 30 == 0 else 15)
@@ -1225,7 +1539,10 @@ def soldier_grid(rows: list, roster: list, day_start: int) -> pd.DataFrame:
     data = []
     for sid, name in roster:
         row = {'שם': name}
-        row.update({labels[c]: ' + '.join(table[str(sid)][c]) or '—' for c in cols})
+        if str(sid) in absent:
+            row.update({labels[c]: 'לא נמצא' for c in cols})
+        else:
+            row.update({labels[c]: ' + '.join(table[str(sid)][c]) or '—' for c in cols})
         data.append(row)
     if any(missing.values()):
         row = {'שם': '⚠️ חוסר כוח אדם'}
@@ -1237,8 +1554,23 @@ def soldier_grid(rows: list, roster: list, day_start: int) -> pd.DataFrame:
 
 
 def summary_table(metrics: dict) -> pd.DataFrame:
+    """בשבצ"ק של כמה ימים: סכומים לכל התקופה, ועומס ממוצע ליום נוכחות (לפיו נמדדת ההוגנות)."""
+    multi = metrics.get('num_days', 1) > 1
     out = []
     for st in metrics['soldiers'].values():
+        if multi:
+            n = st['days_present']
+            out.append({
+                'שם': st['name'],
+                'ימי נוכחות': n,
+                'שעות במשימות': round(st['minutes'] / 60, 1),
+                'מתוכן בלילה': round(st['night_minutes'] / 60, 1),
+                'שעות כוננות': round(st['shared_minutes'] / 60, 1),
+                'עומס משוקלל': round(st['load'] / 120 / n, 1) if n else 0.0,
+                'ימים עם מנוחה רצופה מלאה': st['full_rest_days'],
+                'מנוחה רצופה ביום הקשה ביותר': round(st['longest_rest'] / 60, 1) if n else None,
+            })
+            continue
         out.append({
             'שם': st['name'],
             'שעות במשימות': round(st['minutes'] / 60, 1),
@@ -1274,8 +1606,27 @@ def violations_table(metrics: dict, cfg: Config) -> pd.DataFrame:
     return df
 
 
+def violations_table_multi(day_metrics: list, cfg: Config) -> pd.DataFrame:
+    """חריגות של כל הימים, עם עמודת יום"""
+    if len(day_metrics) == 1:
+        return violations_table(day_metrics[0], cfg)
+    parts = []
+    for d, m in enumerate(day_metrics, start=1):
+        df = violations_table(m, cfg)
+        df.insert(0, 'יום', d)
+        parts.append(df)
+    df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=['יום', 'חייל', 'סוג', 'פירוט'])
+    df.index = range(1, len(df) + 1)
+    return df
+
+
 def comparison_table(base: dict, final: dict, n_soldiers: int) -> pd.DataFrame:
     """השוואת השיבוץ הבסיסי (מחקה שיבוץ ידני) מול השיבוץ הממוטב"""
+    multi = final.get('num_days', 1) > 1
+    rest_label = (f"ימי-חייל עם מנוחה רצופה מלאה (מתוך {final.get('soldier_days', n_soldiers)})"
+                  if multi else f'חיילים עם מנוחה רצופה מלאה (מתוך {n_soldiers})')
+    per_day = ' ליום (ממוצע)' if multi else ''
+
     hours = lambda m: f'{m / 60:.1f}'
     one = lambda x: f'{x:.1f}'
     whole = lambda x: str(int(x))
@@ -1284,11 +1635,11 @@ def comparison_table(base: dict, final: dict, n_soldiers: int) -> pd.DataFrame:
         ('אחוז כיסוי', lambda m: one(m['coverage_pct']) + '%'),
         ('מקרים של מנוחה קצרה מהנדרש', lambda m: whole(len(m['rest_violations']))),
         ('סך שעות מנוחה שקוצצו', lambda m: hours(m['rest_short_minutes'])),
-        (f'חיילים עם מנוחה רצופה מלאה (מתוך {n_soldiers})', lambda m: whole(m['full_rest'])),
+        (rest_label, lambda m: whole(m['full_rest'])),
         ('מתוכם מנוחה מלאה בלילה', lambda m: whole(m['full_night_rest'])),
-        ('פער עומס משוקלל (העמוס ביותר מול הפנוי ביותר)', lambda m: one(m['load_gap'])),
-        ('סטיית תקן של העומס המשוקלל', lambda m: one(m['load_std'])),
-        ('פער שעות', lambda m: one(m['hours_gap'])),
+        (f'פער עומס משוקלל{per_day} (העמוס ביותר מול הפנוי ביותר)', lambda m: one(m['load_gap'])),
+        (f'סטיית תקן של העומס המשוקלל{per_day}', lambda m: one(m['load_std'])),
+        (f'פער שעות{per_day}', lambda m: one(m['hours_gap'])),
     ]
     return pd.DataFrame([{'מדד': label, 'שיבוץ בסיסי': f(base), 'שיבוץ ממוטב': f(final)}
                          for label, f in spec])

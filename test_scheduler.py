@@ -244,6 +244,112 @@ def test_evaluator_catches_a_bad_manual_schedule():
     assert any(h.startswith('H4') for h in hard) and any(h.startswith('H2') for h in hard)
 
 
+# ── שבצ"ק של כמה ימים ────────────────────────────────────────────
+def SA(sid, absences='', blocked='', roles=''):
+    s, w = sc.soldier_from_row({'personal_id': sid, 'full_name': f'חייל {sid}', 'exemptions': '',
+                                'roles': roles, 'blocked_hours': blocked, 'absences': absences})
+    assert w == [], w
+    return s
+
+
+def multi(soldiers, tasks, days, time_limit=6, **kw):
+    res = sc.solve_multi(soldiers, tasks, Config(time_limit=time_limit, **kw), days=days)
+    assert res['metrics']['hard_violations'] == [], res['metrics']['hard_violations']
+    return res
+
+
+def test_absences_are_parsed():
+    days, partial, bad = sc.parse_absences('1, 4(14-18), 6-7')
+    assert days == {1, 6, 7} and partial == {4: [(14 * 60, 18 * 60)]} and bad == []
+    assert sc.parse_absences('3.0')[0] == {3}
+    assert sc.parse_absences('2(8-12, 16-20)')[1] == {2: [(480, 720), (960, 1200)]}
+    assert sc.parse_absences('')[0] == set()
+    assert sc.parse_absences('שלישי')[2] == ['שלישי']
+
+
+def test_one_day_multi_equals_single_day():
+    """שבצ"ק של יום אחד דרך solve_multi זהה לשיבוץ היומי הרגיל"""
+    tasks = [T(1, 'שמירה', 1, 4, 8, False)]
+    a = run(squad(6), tasks)
+    b = multi(squad(6), tasks, 1, time_limit=10)
+    assert b['num_days'] == 1 and b['metrics']['coverage_pct'] == a['metrics']['coverage_pct'] == 100
+    assert len(b['rows']) == 6 and sc.num_days_of(b['rows']) == 1
+
+
+def test_whole_day_absence_is_respected():
+    soldiers = [SA(1), SA(2), SA(3, absences='2'), SA(4)]
+    res = multi(soldiers, [T(1, 'שמירה', 1, 6, 0, False)], 3)
+    assert res['absent'] == {2: ['3']}
+    assert not any(r['personal_id'] == '3' for r in sc.rows_of_day(res['rows'], 2))
+    assert any(r['personal_id'] == '3' for r in res['rows'])
+    assert res['metrics']['soldiers']['3']['days_present'] == 2
+    assert res['metrics']['coverage_pct'] == 100
+
+
+def test_partial_absence_blocks_only_that_day():
+    soldiers = [SA(1, absences='2(6-18)'), SA(2)]
+    res = multi(soldiers, [T(1, 'שמירה', 1, 6, 0, False, hours='6-18')], 2)
+    day2 = [r['personal_id'] for r in sc.rows_of_day(res['rows'], 2)]
+    assert day2 == ['2', '2']
+    day1 = {r['personal_id'] for r in sc.rows_of_day(res['rows'], 1)}
+    assert day1 == {'1', '2'}
+
+
+def test_rest_carries_over_midnight_of_the_schedule():
+    """מי שסיים משמרת בסוף היום לא מקבל את המשמרת הראשונה של מחר, כשיש מי שיחליף"""
+    tasks = [T(1, 'לילה', 1, 6, 8, False, hours='0-6'), T(2, 'בוקר', 1, 6, 8, False, hours='6-12')]
+    res = multi(squad(4), tasks, 3)
+    assert res['metrics']['rest_violations'] == []
+    for d in (2, 3):
+        prev_night = {r['personal_id'] for r in sc.rows_of_day(res['rows'], d - 1) if r['task_name'] == 'לילה'}
+        morning = {r['personal_id'] for r in sc.rows_of_day(res['rows'], d) if r['task_name'] == 'בוקר'}
+        assert not (prev_night & morning)
+
+
+def test_rest_carry_violation_is_reported_when_unavoidable():
+    tasks = [T(1, 'לילה', 1, 6, 8, False, hours='0-6'), T(2, 'בוקר', 1, 6, 8, False, hours='6-12')]
+    res = multi([SA(1)], tasks, 2)
+    assert res['metrics']['coverage_pct'] == 100          # כיסוי גובר על מנוחה
+    assert any('מאתמול' in v['after'] for v in res['metrics']['rest_violations'])
+
+
+def test_load_is_balanced_across_days():
+    """משימה אחת ביום, שלושה חיילים, שלושה ימים: כל אחד מקבל יום אחד"""
+    res = multi(squad(3), [T(1, 'משימה', 1, 8, 0, False, hours='8-16')], 3)
+    per = {}
+    for r in res['rows']:
+        per[r['personal_id']] = per.get(r['personal_id'], 0) + 1
+    assert sorted(per.values()) == [1, 1, 1], per
+    assert res['metrics']['hours_gap'] == 0
+
+
+def test_absent_soldier_does_not_have_to_catch_up():
+    """מי שחזר מהיעדרות לא מקבל את כל המשמרות כדי להשלים את מה שהחסיר"""
+    soldiers = [SA(1, absences='1-2'), SA(2), SA(3)]
+    res = multi(soldiers, [T(1, 'משימה', 1, 8, 0, False, hours='8-16')], 4)
+    late = [r['personal_id'] for d in (3, 4) for r in sc.rows_of_day(res['rows'], d)]
+    assert late.count('1') <= 1, late
+
+
+def test_multi_day_tables():
+    res = multi(squad(4), [T(1, 'שמירה', 1, 6, 0, False)], 2)
+    tt = sc.task_table(res['rows'], 360)
+    assert list(tt['יום'].unique()) == [1, 2] and len(tt) == 8
+    grid = sc.soldier_grid(sc.rows_of_day(res['rows'], 2), [('1001', 'א'), ('1002', 'ב')], 360, absent=['1002'])
+    assert set(grid.iloc[1, 1:]) == {'לא נמצא'}
+    assert 'ימי נוכחות' in sc.summary_table(res['metrics']).columns
+    cmp_ = sc.comparison_table(res['baseline_metrics'], res['metrics'], 4)
+    assert any('ימי-חייל' in x for x in cmp_['מדד'])
+
+
+def test_result_is_never_worse_than_the_baseline():
+    """גם כשזמן החישוב קצר מאוד לבעיה גדולה, התוצאה אינה גרועה מהשיבוץ הבסיסי לפי סדר העדיפות"""
+    soldiers, tasks = platoon(60)
+    res = sc.solve_schedule(soldiers, tasks, Config(time_limit=3))
+    assert res['metrics']['hard_violations'] == []
+    assert sc._rank(soldiers, res['metrics']) <= sc._rank(soldiers, res['baseline_metrics'])
+
+
 if __name__ == '__main__':
     import sys
     import time

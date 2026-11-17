@@ -172,7 +172,7 @@ ss.setdefault('view', None)
 # תבניות ונתוני דוגמה
 # ══════════════════════════════════════════════════════════════════
 S_COLS = {'personal_id': 'מספר אישי', 'full_name': 'שם מלא', 'exemptions': 'פטורים',
-          'roles': 'הסמכות', 'blocked_hours': 'שעות חסימה'}
+          'roles': 'הסמכות', 'blocked_hours': 'שעות חסימה', 'absences': 'ימי היעדרות'}
 T_COLS = {'task_no': 'מס"ד משימה', 'name': 'שם המשימה', 'required': 'סד"כ נדרש למשימה',
           'shift_hours': 'משך משמרת', 'rest_hours': 'שעות מנוחה בין משימות',
           'shared': 'אישור חפיפה בין משימות', 'active_hours': 'שעות פעילות',
@@ -189,8 +189,11 @@ def demo_rows():
              1: 'נהג', 7: 'נהג', 13: 'נהג', 19: 'נהג', 4: 'נהג,חובש', 10: 'חובש'}
     blocked = {3: '08:30-12:00', 9: '14:00-18:00', 15: '06:00-10:30'}
     exempt = {5: '104', 20: '105'}
+    # ימי היעדרות משפיעים רק בשבצ"ק של כמה ימים: יום שלם, טווח ימים, או שעות ביום מסוים
+    absences = {2: '3-4', 5: '2(8-12)', 14: '6-7', 20: '5', 22: '1(14-20), 7'}
     s_rows = [{'personal_id': str(7001 + i), 'full_name': n, 'exemptions': exempt.get(i, ''),
-               'roles': roles.get(i, ''), 'blocked_hours': blocked.get(i, '')}
+               'roles': roles.get(i, ''), 'blocked_hours': blocked.get(i, ''),
+               'absences': absences.get(i, '')}
               for i, n in enumerate(names)]
     t = lambda no, name, req, shift, rest, shared, hours, rr, inten, br, pr: {
         'task_no': no, 'name': name, 'required': req, 'shift_hours': shift, 'rest_hours': rest,
@@ -404,7 +407,7 @@ def auth_screen():
     st.markdown("""
     <div class="app-header">
       <h1>🪖 שבצ"ק — מערכת שיבוץ כוחות חכמה</h1>
-      <p>בונה שבצ"ק יומי מלא בתוך שניות: כל עמדה מאוישת, מנוחה רצופה לחיילים, וחלוקת עומס הוגנת</p>
+      <p>בונה שבצ"ק ליום אחד או לשבוע שלם: כל עמדה מאוישת, מנוחה רצופה לחיילים, וחלוקת עומס הוגנת</p>
     </div>""", unsafe_allow_html=True)
     _, mid, _ = st.columns([1, 1.4, 1])
     with mid:
@@ -475,47 +478,62 @@ def get_run(run_id: int):
 # ══════════════════════════════════════════════════════════════════
 # הרצת שיבוץ
 # ══════════════════════════════════════════════════════════════════
-def run_schedule(s_rows, t_rows, d_rows, cfg: sc.Config):
+def run_schedule(s_rows, t_rows, d_rows, cfg: sc.Config, days: int = 1, progress=None):
     soldiers, tasks, directives, warns = sc.build_objects(s_rows, t_rows, d_rows)
-    res = sc.solve_schedule(soldiers, tasks, cfg, directives)
+    res = sc.solve_multi(soldiers, tasks, cfg, directives, days=days, progress=progress)
     m = res['metrics']
-    rows = sc.assignment_rows(soldiers, res['shifts'], res['assign'], cfg)
+    rows = res['rows']
     roster = [(s.sid, s.name) for s in soldiers]
     compare = sc.comparison_table(res['baseline_metrics'], m, len(soldiers))
-    label = 'שיבוץ ' + datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
+    stamp = datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
+    label = f'שיבוץ {stamp}' if days == 1 else f'שיבוץ ל-{days} ימים {stamp}'
     run_id = db.save_run(USER['id'], label, cfg.day_start, res['engine'], len(tasks), m,
-                         res['seconds'], roster, compare.to_dict('records'), rows)
+                         res['seconds'], roster, compare.to_dict('records'), rows,
+                         extra={'num_days': days, 'absent': res['absent']})
     db.log_event(USER['id'], 'run',
-                 f"{len(soldiers)} חיילים, {len(tasks)} משימות, כיסוי {m['coverage_pct']:.0f}%")
+                 f"{len(soldiers)} חיילים, {len(tasks)} משימות, {days} ימים, כיסוי {m['coverage_pct']:.0f}%")
     ss.runs = None
     return {
         'run_id': run_id, 'label': label, 'rows': rows, 'roster': roster,
+        'num_days': days, 'absent': res['absent'],
         'day_start': cfg.day_start, 'sleep_target': cfg.sleep_target,
         'num_tasks': len(tasks), 'engine': res['engine'], 'seconds': res['seconds'],
         'warnings': warns + res['warnings'],
         'stages': [{k: v for k, v in s.items() if not k.startswith('_')} for s in res['stages']],
         'compare': compare,
         'summary': sc.summary_table(m),
-        'violations': sc.violations_table(m, cfg),
+        'violations': sc.violations_table_multi(res['day_metrics'], cfg),
         'shortages': pd.DataFrame(res['shortage_reasons']),
         'hard': m['hard_violations'],
         'm': {k: m[k] for k in ('short_minutes', 'coverage_pct', 'full_rest', 'full_night_rest',
-                                'load_gap', 'hours_gap', 'slots_total', 'short_slots')},
+                                'load_gap', 'hours_gap', 'slots_total', 'short_slots', 'soldier_days')},
         'n_rest_viol': len(m['rest_violations']),
     }
 
 
 def render_schedule(rows, roster, day_start, key: str, summary=None, violations=None,
-                    shortages=None, compare=None):
-    """הצגת שבצ"ק: ציר זמן, טבלאות, והורדה. משמש גם את מסך התוצאה וגם את ההיסטוריה."""
-    task_df = sc.task_table(rows, day_start)
-    grid_df = sc.soldier_grid(rows, roster, day_start)
+                    shortages=None, compare=None, absent=None):
+    """הצגת שבצ"ק: ציר זמן, טבלאות, והורדה. משמש גם את מסך התוצאה וגם את ההיסטוריה.
+    בשבצ"ק של כמה ימים בוחרים איזה יום להציג; קובץ ה-Excel כולל תמיד את כל הימים."""
+    absent = {int(d): [str(x) for x in sids] for d, sids in (absent or {}).items()}
+    n_days = sc.num_days_of(rows)
+    day = 1
+    if n_days > 1:
+        day = st.radio('איזה יום להציג', list(range(1, n_days + 1)), horizontal=True,
+                       format_func=lambda d: f'יום {d}', key=f'day_{key}')
+    day_rows = sc.rows_of_day(rows, day)
+    gone = set(absent.get(day, []))
+    day_roster = [(sid, name) for sid, name in roster if str(sid) not in gone]
+    task_df = sc.task_table(day_rows, day_start)
+    grid_df = sc.soldier_grid(day_rows, roster, day_start, absent=gone)
 
-    fig = timeline_chart(rows, roster, day_start)
+    fig = timeline_chart(day_rows, day_roster, day_start)
     if fig is not None:
         st.plotly_chart(fig, key=f'tl_{key}', **FULL)
         st.caption('כל שורה היא חייל וכל מקטע הוא משמרת. פס שקוף ברקע הוא כוננות (משימה שיתופית). '
                    'העמידו את העכבר על מקטע כדי לראות פרטים.')
+    if gone:
+        st.caption('לא נמצאים ביום הזה: ' + ', '.join(name for sid, name in roster if str(sid) in gone))
 
     v_grid, v_task = st.tabs(['טבלה לפי חייל', 'טבלה לפי משימה'])
     with v_grid:
@@ -523,7 +541,13 @@ def render_schedule(rows, roster, day_start, key: str, summary=None, violations=
     with v_task:
         st.dataframe(task_df, hide_index=True, **FULL)
 
-    sheets = {'לפי משימה': task_df, 'לפי חייל': grid_df}
+    if n_days == 1:
+        sheets = {'לפי משימה': task_df, 'לפי חייל': grid_df}
+    else:
+        sheets = {'לפי משימה': sc.task_table(rows, day_start)}
+        for d in range(1, n_days + 1):
+            sheets[f'לפי חייל - יום {d}'] = sc.soldier_grid(
+                sc.rows_of_day(rows, d), roster, day_start, absent=absent.get(d, []))
     if summary is not None and not summary.empty:
         sheets['סיכום לחייל'] = summary
     if violations is not None and not violations.empty:
@@ -532,7 +556,8 @@ def render_schedule(rows, roster, day_start, key: str, summary=None, violations=
         sheets['חוסרים'] = shortages
     if compare is not None and not compare.empty:
         sheets['השוואה'] = compare
-    if st.download_button('📥 הורדת השבצ"ק (Excel)', data=to_excel(sheets),
+    if st.download_button('📥 הורדת השבצ"ק (Excel)' + (' — כל הימים' if n_days > 1 else ''),
+                          data=to_excel(sheets),
                           file_name=f'shavtzak_{key}.xlsx', key=f'dl_{key}', **FULL):
         db.log_event(USER['id'], 'download', key)
 
@@ -552,20 +577,23 @@ def render_result(v):
                     f"שתי משימות בלעדיות באותו זמן). הפירוט והסיבה לכל חוסר מופיעים למטה.")
 
     n = len(v['roster'])
+    days = v.get('num_days', 1)
+    multi = days > 1
+    rest_of = m.get('soldier_days', n) if multi else n
     st.markdown(f"""
     <div class="metric-row">
       <div class="metric-card"><div class="mc-label">כיסוי עמדות</div>
         <div class="mc-value">{m['coverage_pct']:.0f}%</div>
-        <div class="mc-sub">{n} חיילים · {v['num_tasks']} משימות</div></div>
+        <div class="mc-sub">{n} חיילים · {v['num_tasks']} משימות{f' · {days} ימים' if multi else ''}</div></div>
       <div class="metric-card"><div class="mc-label">מנוחה רצופה מלאה</div>
-        <div class="mc-value">{m['full_rest']}/{n}</div>
-        <div class="mc-sub">{m['full_night_rest']} מהם בלילה · יעד {sc.fmt_dur(v['sleep_target'])} שעות</div></div>
+        <div class="mc-value">{m['full_rest']}/{rest_of}</div>
+        <div class="mc-sub">{'ימי-חייל · ' if multi else ''}{m['full_night_rest']} מהם בלילה · יעד {sc.fmt_dur(v['sleep_target'])} שעות</div></div>
       <div class="metric-card"><div class="mc-label">מנוחה קצרה מהנדרש</div>
         <div class="mc-value">{v['n_rest_viol']}</div>
         <div class="mc-sub">מקרים בין משמרות</div></div>
       <div class="metric-card"><div class="mc-label">פער עומס</div>
         <div class="mc-value">{m['load_gap']:.0f}</div>
-        <div class="mc-sub">בין העמוס ביותר לפנוי ביותר · {m['hours_gap']:.0f} שעות</div></div>
+        <div class="mc-sub">{'ממוצע ליום, ' if multi else ''}בין העמוס ביותר לפנוי ביותר · {m['hours_gap']:.0f} שעות</div></div>
       <div class="metric-card"><div class="mc-label">זמן חישוב</div>
         <div class="mc-value">{v['seconds']:.0f}״</div>
         <div class="mc-sub">מנוע: {v['engine']}</div></div>
@@ -578,7 +606,7 @@ def render_result(v):
     st.subheader('📅 השבצ"ק')
     render_schedule(v['rows'], v['roster'], v['day_start'], key=f"run{v['run_id']}",
                     summary=v['summary'], violations=v['violations'],
-                    shortages=v['shortages'], compare=v['compare'])
+                    shortages=v['shortages'], compare=v['compare'], absent=v.get('absent'))
 
     st.subheader('🔎 חריגות לאישור המפקד')
     if v['violations'].empty:
@@ -589,6 +617,8 @@ def render_result(v):
         small_table(v['violations'])
 
     st.subheader('⚖️ חלוקת העומס')
+    if multi:
+        st.caption('העומס מוצג כממוצע ליום נוכחות, כדי שחייל שהיה חלק מהימים בבית לא ייראה כמי שעבד פחות.')
     st.plotly_chart(load_chart(v['summary']), key=f"load{v['run_id']}", **FULL)
     with st.expander('טבלת סיכום לכל חייל'):
         st.dataframe(v['summary'], hide_index=True, **FULL)
@@ -669,7 +699,13 @@ with tab_run:
         st.rerun()
 
     st.markdown('#### 2. הגדרות')
-    g1, g2, g3 = st.columns(3)
+    g0, g1, g2, g3 = st.columns(4)
+    with g0:
+        num_days = st.selectbox(
+            'משך השבצ"ק', list(range(1, sc.MAX_DAYS + 1)), index=0,
+            format_func=lambda d: 'יום אחד' if d == 1 else ('יומיים' if d == 2 else ('שבוע (7 ימים)' if d == 7 else f'{d} ימים')),
+            help='בשבצ"ק של כמה ימים המשימות חוזרות בכל יום. המערכת זוכרת מיום ליום כמה כל חייל כבר '
+                 'עבד ומתי סיים את המשמרת האחרונה, ומתחשבת בעמודה "ימי היעדרות" שבקובץ החיילים.')
     with g1:
         day_start_h = st.selectbox(
             'שעת תחילת היממה', list(range(24)), index=6, format_func=lambda h: f'{h:02d}:00',
@@ -678,8 +714,9 @@ with tab_run:
     with g2:
         sleep_h = st.selectbox('יעד מנוחה רצופה לחייל (שעות)', [5, 6, 7, 8], index=2)
     with g3:
-        time_limit = st.slider('זמן חישוב מרבי (שניות)', 5, 120, 20, 5,
-                               help='החישוב נעצר מוקדם יותר כשאין עוד שיפור. במחלקה רגילה 20 שניות מספיקות.')
+        time_limit = st.slider('זמן חישוב מרבי ליום (שניות)', 5, 120, 20, 5,
+                               help='החישוב נעצר מוקדם יותר כשאין עוד שיפור. במחלקה רגילה 20 שניות מספיקות. '
+                                    'בשבצ"ק של כמה ימים הזמן הזה הוא לכל יום בנפרד.')
 
     st.markdown('#### 3. הרצה')
     if st.button('⚙️ יצירת שבצ"ק', type='primary', **FULL):
@@ -689,8 +726,10 @@ with tab_run:
             if inputs is not None:
                 cfg = sc.Config(day_start=day_start_h * 60, sleep_target=sleep_h * 60,
                                 sleep_min=min(4, sleep_h - 1) * 60, time_limit=float(time_limit))
+                bar = st.progress(0.0, text='מתחיל...') if num_days > 1 else None
+                step = (lambda d, n: bar.progress((d - 1) / n, text=f'מחשב את יום {d} מתוך {n}...')) if bar else None
                 with st.spinner('מחשב שיבוץ: כיסוי עמדות ← מנוחה ושינה ← הוגנות...'):
-                    ss.view = run_schedule(*inputs, cfg)
+                    ss.view = run_schedule(*inputs, cfg, days=num_days, progress=step)
                 done = True
         except ValueError as e:
             ss.view = None
@@ -723,7 +762,8 @@ with tab_history:
         run, rows = get_run(options[chosen])
         if run:
             render_schedule(rows, run['roster'], run['day_start'], key=f"hist{run['id']}",
-                            compare=pd.DataFrame(run['compare']))
+                            compare=pd.DataFrame(run['compare']),
+                            absent=run.get('extra', {}).get('absent'))
         st.markdown('---')
         if st.button('🗑️ מחיקת כל ההיסטוריה שלי'):
             db.delete_runs(USER['id'])
@@ -765,7 +805,30 @@ with tab_guide:
 | שם מלא | שם להצגה | נועם לוי |
 | פטורים | מס"ד של משימות שהחייל פטור מהן | 104, 105 |
 | הסמכות | תפקידים והסמכות | נהג, חובש |
-| שעות חסימה | מתי החייל לא זמין | 08:30-12:00 |
+| שעות חסימה | מתי החייל לא זמין, בכל יום | 08:30-12:00 |
+| ימי היעדרות | לא חובה. באילו ימים של השבצ"ק החייל לא נמצא | 3-4 |
+
+### שבצ"ק של כמה ימים
+
+בלשונית "שיבוץ" בוחרים את משך השבצ"ק: מיום אחד ועד שבוע. המשימות חוזרות על עצמן בכל יום.
+היום הראשון של השבצ"ק הוא יום 1, זה שאחריו יום 2, וכן הלאה.
+
+המערכת משבצת יום אחרי יום, וכל יום "זוכר" את הימים שלפניו:
+
+- **מנוחה.** מי שסיים משמרת בסוף היום לא יקבל משמרת בתחילת היום שאחריו, אם יש מי שיחליף אותו.
+- **הוגנות.** מי שעבד הרבה אתמול יעבוד פחות היום, כך שהעומס מתאזן לאורך כל התקופה.
+- **היעדרות.** חייל שלא נמצא לא משובץ, וכשהוא חוזר הוא לא נדרש "להשלים" את מה שהחסיר.
+
+בעמודה **ימי היעדרות** כותבים:
+
+| כותבים | המשמעות |
+|---|---|
+| `3` | לא נמצא ביום 3 כולו |
+| `3-5` | לא נמצא בימים 3 עד 5 |
+| `2(8-12)` | ביום 2 בלבד לא זמין מ-08:00 עד 12:00 |
+| `1, 4(14-18), 6-7` | אפשר לשלב, עם פסיק בין הפריטים |
+
+ההבדל בין שתי העמודות: "שעות חסימה" חוזרת בכל יום, ו"ימי היעדרות" היא ליום מסוים.
 
 ### קובץ משימות
 
@@ -788,6 +851,7 @@ with tab_guide:
 קובץ שלישי עם העמודות: **מספר אישי · מס"ד משימה · סוג · שעות**.
 בעמודה "סוג" כותבים `חובה` (החייל חייב לקבל משמרת במשימה הזו) או `אסור` (החייל לא ישובץ אליה).
 העמודה "שעות" מצמצמת את ההנחיה לחלון זמן, למשל `22-2`.
+בשבצ"ק של כמה ימים ההנחיות חלות על כל יום.
 """)
 
 # ── תבניות ──────────────────────────────────────────────────────

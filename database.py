@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS soldiers (
     full_name     TEXT    NOT NULL,
     exemptions    TEXT    NOT NULL DEFAULT '',
     roles         TEXT    NOT NULL DEFAULT '',
-    blocked_hours TEXT    NOT NULL DEFAULT ''
+    blocked_hours TEXT    NOT NULL DEFAULT '',
+    absences      TEXT    NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS tasks (
     id             {PK},
@@ -98,7 +99,8 @@ CREATE TABLE IF NOT EXISTS runs (
     load_gap        DOUBLE PRECISION NOT NULL,
     solve_seconds   DOUBLE PRECISION NOT NULL,
     roster_json     TEXT    NOT NULL,
-    compare_json    TEXT    NOT NULL
+    compare_json    TEXT    NOT NULL,
+    extra_json      TEXT    NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS assignments (
     id           {PK},
@@ -264,6 +266,24 @@ def _now(shift_days: int = 0) -> str:
     return (now + datetime.timedelta(days=shift_days)).strftime('%Y-%m-%d %H:%M:%S')
 
 
+# עמודות שנוספו אחרי הגרסה הראשונה. בסיס נתונים קיים מקבל אותן אוטומטית בעלייה.
+MIGRATIONS = [
+    ('soldiers', 'absences', "TEXT NOT NULL DEFAULT ''"),
+    ('runs', 'extra_json', "TEXT NOT NULL DEFAULT '{}'"),
+]
+
+
+def _migrate():
+    for table, column, ddl in MIGRATIONS:
+        if _url:
+            have = _value('SELECT COUNT(*) FROM information_schema.columns '
+                          'WHERE table_name = ? AND column_name = ?', (table, column))
+        else:
+            have = any(r['name'] == column for r in _rows(f'PRAGMA table_info({table})'))
+        if not have:
+            _exec(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}')
+
+
 def init_db():
     pk = 'SERIAL PRIMARY KEY' if _url else 'INTEGER PRIMARY KEY AUTOINCREMENT'
     schema = SCHEMA.replace('{PK}', pk)
@@ -276,6 +296,7 @@ def init_db():
                 _conn = _open()
             _conn.executescript(schema)
             _conn.commit()
+    _migrate()
 
 
 def status() -> dict:
@@ -417,7 +438,8 @@ def save_roster(user_id: int, s_rows: list, t_rows: list):
     """מחליף את רשימות החיילים והמשימות של המשתמש."""
     soldiers = [(user_id, _txt(r.get('personal_id')).removesuffix('.0'), _txt(r.get('full_name')),
                  _txt(r.get('exemptions')).removesuffix('.0'), _txt(r.get('roles')),
-                 _txt(r.get('blocked_hours'))) for r in s_rows]
+                 _txt(r.get('blocked_hours')), _txt(r.get('absences')).removesuffix('.0'))
+                for r in s_rows]
     tasks = [(user_id, int(_num(r.get('task_no'))), _txt(r.get('name')),
               max(1, int(_num(r.get('required'), 1))), _num(r.get('shift_hours'), 1) or 1,
               _num(r.get('rest_hours'), 0), _flag(r.get('shared')), _txt(r.get('active_hours')),
@@ -429,7 +451,7 @@ def save_roster(user_id: int, s_rows: list, t_rows: list):
         cur.execute(_sql('DELETE FROM tasks WHERE user_id = ?'), (user_id,))
         if soldiers:
             _insert_rows(cur, 'soldiers', ['user_id', 'personal_id', 'full_name', 'exemptions',
-                                           'roles', 'blocked_hours'], soldiers)
+                                           'roles', 'blocked_hours', 'absences'], soldiers)
         if tasks:
             _insert_rows(cur, 'tasks', ['user_id', 'task_no', 'name', 'required', 'shift_hours',
                                         'rest_hours', 'shared', 'active_hours', 'required_roles',
@@ -438,7 +460,7 @@ def save_roster(user_id: int, s_rows: list, t_rows: list):
 
 
 def load_roster(user_id: int):
-    s_rows = _rows('SELECT personal_id, full_name, exemptions, roles, blocked_hours '
+    s_rows = _rows('SELECT personal_id, full_name, exemptions, roles, blocked_hours, absences '
                    'FROM soldiers WHERE user_id = ? ORDER BY id', (user_id,))
     t_rows = _rows('SELECT task_no, name, required, shift_hours, rest_hours, shared, active_hours, '
                    'required_roles, intensity, blocked_roles, priority '
@@ -450,22 +472,26 @@ def load_roster(user_id: int):
 # הרצות ושיבוצים
 # ══════════════════════════════════════════════════════════════════
 def save_run(user_id: int, label: str, day_start: int, engine: str, num_tasks: int,
-             metrics: dict, seconds: float, roster: list, compare: list, rows: list) -> int:
+             metrics: dict, seconds: float, roster: list, compare: list, rows: list,
+             extra: dict = None) -> int:
+    """extra: מידע נוסף על ההרצה (מספר ימים, מי לא נמצא באיזה יום)"""
     def work(cur):
         run_id = _insert_id(
             cur, 'INSERT INTO runs (user_id, created_at, label, day_start, engine, num_soldiers, '
                  'num_tasks, short_hours, coverage_pct, rest_violations, full_rest, load_gap, '
-                 'solve_seconds, roster_json, compare_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                 'solve_seconds, roster_json, compare_json, extra_json) '
+                 'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (user_id, _now(), label, day_start, engine, len(roster), num_tasks,
              round(metrics['short_minutes'] / 60, 2), round(metrics['coverage_pct'], 2),
              len(metrics['rest_violations']), metrics['full_rest'], round(metrics['load_gap'], 2),
              seconds, json.dumps(roster, ensure_ascii=False),
-             json.dumps(compare, ensure_ascii=False)))
+             json.dumps(compare, ensure_ascii=False),
+             json.dumps(extra or {}, ensure_ascii=False)))
         _insert_rows(cur, 'assignments',
                      ['run_id', 'task_no', 'task_name', 'personal_id', 'soldier_name', 'role',
                       'start_min', 'end_min', 'shared'],
                      [(run_id, r['task_no'], r['task_name'], r['personal_id'], r['soldier_name'],
-                       r['role'], r['start_min'], r['end_min'], r['shared']) for r in rows])
+                       r['role'], int(r['start_min']), int(r['end_min']), _flag(r['shared'])) for r in rows])
         return run_id
     return _transaction(work)
 
@@ -485,6 +511,7 @@ def load_run(run_id: int, user_id: int):
                  'shared FROM assignments WHERE run_id = ? ORDER BY id', (run_id,))
     run['roster'] = [tuple(x) for x in json.loads(run.pop('roster_json'))]
     run['compare'] = json.loads(run.pop('compare_json'))
+    run['extra'] = json.loads(run.pop('extra_json', None) or '{}')
     return run, rows
 
 

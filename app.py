@@ -147,7 +147,7 @@ def _secret(name: str, env: str):
 
 
 @st.cache_resource
-def _boot(database_url, admin_pw):
+def _boot(database_url, admin_pw, schema_version):
     # הפרמטרים הם חלק מהמפתח: שינוי ב-Secrets מפעיל את האתחול מחדש
     db.configure(database_url)
     db.init_db()
@@ -156,7 +156,8 @@ def _boot(database_url, admin_pw):
 
 
 try:
-    _boot(_secret('DATABASE_URL', 'DATABASE_URL'), _secret('ADMIN_PASSWORD', 'SHAVTZAK_ADMIN_PASSWORD'))
+    _boot(_secret('DATABASE_URL', 'DATABASE_URL'), _secret('ADMIN_PASSWORD', 'SHAVTZAK_ADMIN_PASSWORD'),
+          db.SCHEMA_VERSION)
 except Exception as e:
     st.error('לא הצלחתי להתחבר לבסיס הנתונים. בדקו ששורת החיבור DATABASE_URL ב-Secrets הועתקה במלואה, '
              'בתוך מירכאות.')

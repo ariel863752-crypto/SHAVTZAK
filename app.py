@@ -146,21 +146,30 @@ def _secret(name: str, env: str):
         return None
 
 
+# גרסת האתר. משנים אותה בכל עדכון שמשנה את מבנה בסיס הנתונים: היא חלק ממפתח האתחול,
+# ולכן אחרי עדכון האתחול רץ שוב ומוסיף לבסיס הנתונים את העמודות החדשות.
+APP_VERSION = '2026-11-17'
+
+
 @st.cache_resource
-def _boot(database_url, admin_pw, schema_version):
-    # הפרמטרים הם חלק מהמפתח: שינוי ב-Secrets מפעיל את האתחול מחדש
+def _boot(database_url, admin_pw, app_version):
+    # הפרמטרים הם חלק מהמפתח: שינוי ב-Secrets או בגרסה מפעיל את האתחול מחדש
     db.configure(database_url)
     db.init_db()
     db.ensure_admin(admin_pw)
     return True
 
 
+_db_url = _secret('DATABASE_URL', 'DATABASE_URL')
 try:
-    _boot(_secret('DATABASE_URL', 'DATABASE_URL'), _secret('ADMIN_PASSWORD', 'SHAVTZAK_ADMIN_PASSWORD'),
-          db.SCHEMA_VERSION)
+    _boot(_db_url, _secret('ADMIN_PASSWORD', 'SHAVTZAK_ADMIN_PASSWORD'), APP_VERSION)
 except Exception as e:
-    st.error('לא הצלחתי להתחבר לבסיס הנתונים. בדקו ששורת החיבור DATABASE_URL ב-Secrets הועתקה במלואה, '
-             'בתוך מירכאות.')
+    if _db_url:
+        st.error('לא הצלחתי להתחבר לבסיס הנתונים. בדקו ששורת החיבור DATABASE_URL ב-Secrets הועתקה במלואה, '
+                 'בתוך מירכאות.')
+    else:
+        st.error('לא הצלחתי לפתוח את בסיס הנתונים. בדקו שכל קובצי האתר ב-GitHub הם מאותה גרסה '
+                 '(app.py, database.py, scheduler.py), ואז הפעילו מחדש את האתר (Reboot app).')
     st.code(str(e))
     st.stop()
 

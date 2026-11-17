@@ -135,6 +135,10 @@ EVENT_LABELS = {'register': 'הרשמה', 'login': 'כניסה', 'run': 'הרצ�
 # ══════════════════════════════════════════════════════════════════
 # חיבור
 # ══════════════════════════════════════════════════════════════════
+SCHEMA_VERSION = 2          # עולה בכל פעם שמבנה הטבלאות משתנה
+_ready = set()              # בסיסי הנתונים שכבר עודכנו בתהליך הזה
+
+
 def configure(database_url=None):
     """קובע לאיזה בסיס נתונים מתחברים. שורת חיבור ריקה = קובץ SQLite מקומי."""
     global _url, _conn
@@ -188,6 +192,15 @@ def _transaction(work):
             try:
                 if _conn is None:
                     _conn = _open()
+                    if _url not in _ready:
+                        # כל חיבור ראשון מוודא שהטבלאות והעמודות החדשות קיימות,
+                        # גם אם האתר עודכן בלי אתחול מלא
+                        _ready.add(_url)
+                        try:
+                            init_db()
+                        except Exception:
+                            _ready.discard(_url)
+                            raise
                 cur = _conn.cursor()
                 try:
                     result = work(cur)
